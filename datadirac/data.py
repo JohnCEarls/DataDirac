@@ -44,6 +44,12 @@ class SourceData:
         self.net_info = NetworkInfo(table_name,source_id)
         self.initGenes()
 
+    def set_net_info(self, net_info):
+        """
+        Sets net_info from NetworkInfo object
+        """
+        self.net_info = net_info
+        self.initGenes()
 
     def getExpression(self, sample_ids):
         """
@@ -132,7 +138,8 @@ class NetworkInfo:
     """
     def __init__(self, table_name, source_id):
         self.logger = logging.getLogger('NetworkInfo')
-        self.table = Table(table_name)
+        self.table_name = table_name
+        #self.table = Table(table_name)
         self.source_id = source_id
         self.gene_map = {}
         #clean refers to the genes being filtered to match the genes
@@ -148,7 +155,7 @@ class NetworkInfo:
         genes that do not show up in data set.)
         """
         if pathway_id not in self.gene_map:
-            table = self.table
+            table = Table(self.table_name)
             source_id = self.source_id
             self.logger.info("Getting network info [%s.%s.%s]" % (table.table_name, source_id, pathway_id))
             nit_item = table.get_item(src_id=source_id, pw_id=pathway_id)
@@ -161,7 +168,8 @@ class NetworkInfo:
         Returns list of pathways
         """
         if len(self.pathways) == 0:
-            pw_ids = self.table.query(src_id__eq=self.source_id, attributes=('pw_id','gene_ids'))
+            table = Table(self.table_name)
+            pw_ids = table.query(src_id__eq=self.source_id, attributes=('pw_id','gene_ids'))
             #simple load balancing
             t = [(len(pw['gene_ids'].split('~:~')), pw['pw_id']) for pw in pw_ids]
             t.sort()
@@ -192,7 +200,14 @@ class NetworkInfo:
         """
         self.gene_map = {}
         self.gene_clean = {}
+    def __getstate__(self):
+        odict = self.__dict__.copy() # copy the dict since we change it
+        del odict['logger']              # remove filehandle entry
+        return odict
 
+    def __setstate__(self, dict):
+        self.__dict__.update(dict)   # update attributes
+        self.logger = logging.getLogger('NetworkInfo')
 
 if __name__ == "__main__":
     #getNetworkExpression( "c2.cp.biocarta.v4.0.symbols.gmt", "BIOCARTA_AKAPCENTROSOME_PATHWAY")
