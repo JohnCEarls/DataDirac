@@ -133,39 +133,34 @@ class DataNode(MPINode):
         self._pathways = self._getPathways()
 
     def run(self):
-        quit = False
-        status_buffer = np.empty((1,),dtype=int)
-        while not quit:
-            #create data
-            strains = self.getStrains()
-            self.world_comm.Recv( status_buffer, source=0)
-            if status_buffer[0] < 0:
-                quit = True
-            else:
-                if status_buffer[0] < len(strains):
-                    shuffle=False
-                else:
-                    shuffle=True
-                    status_buffer[0] = status_buffer[0]/2
-                mystrain = strains[status_buffer[0]]
-                dataNode_pkg, gpuNode_pkg = self.packageData( mystrain, shuffle )
+        desc_file_path = {}
+        shuffle, strain, num_runs = self.comm.recv( source=0 )
+        strains = self.getStrains()
+        mystrain = strains[strain]
+        while num_runs > 0:
+            num_runs -= 1
+            dataNode_pkg, gpuNode_pkg = self.packageData( mystrain, shuffle )
+            file_id = self.create_file_id()
+            desc_file = self.save_description(dataNode_pkg, file_id)
+            desc_file_path[file_id] = desc_file
+            _,alleles,_ = dataNode_pkg
+            for i,allele in enumerate(alleles):
+                allele_gpuNode_pkg = self.buffer_data( gpuNode_pkg, i )
+                all_file_id = '-'.join([file_id, allele])
+                f_paths = self.save_data( allele_gpuNode_pkg,all_file_id )
+                self.transmit_data( f_paths )
 
-                (sample_names, alleles, sample_allele) = dataNode_pkg 
-                (samp_maps, net_map, gene_map, expression_matrix) = gpuNode_pkg 
-                self.save_data( gpuNode_pkg)
-
-                self.world_comm.Recv( status_buffer, source=0)
-                mygpu = status_buffer[0]
-                #HACK!!!!!!!
-                mygpu = 0
-                if mygpu > 0:
-                    #send to gpu
-                    self.sendData(  gpuNode_pkg, mygpu )
-                    #receive from gpu
-                    #results = self.world_comm.recv( source=mygpu )
-                else:
-                    quit = True
-                #partition
+    def transmit_data(self, f_paths, file_id):
+        mess = {}
+        mess['file_id'] = file_id
+        mess['f_names'] = [op.split(f)[1] for f in f_paths]
+        conn = boto.s3.connection.S3Connection(region='us-east-1')
+        bucket = conn.get_bucket(self.working_bucket)
+        for f in f_paths:
+            k = Key(bucket)
+            k.key = op.split()[1]
+            k.set_metadata('source_machine', self.name) 
+            k.set_contents_from_filename(f)
 
     def sendData( self, gpuNode_pkg, gpurank):
         (samp_maps, net_map, gene_map, expression_matrix) = gpuNode_pkg
@@ -174,9 +169,44 @@ class DataNode(MPINode):
         self.world_comm.send( gene_map, dest=gpurank )
         self.world_comm.send( expression_matrix, dest=gpurank)
 
-    def save_data(self, data_pkg):
+    def save_description( self, dataNode_pkg, file_id):
+        """
+        Saves the data description to a file
+        """
+        (sample_names, alleles, sample_allele) = dataNode_pkg
+        desc_dict = {}
+        desc_dict['file_id'] = file_id
+        desc_dict['sample_names'] = sample_names
+        desc_dict['alleles'] = alleles
+        desc_dict['sample_allele'] = sample_allele
+        desc_file_path = op.join(self.working_dir, '_'.join([file_id, 'desc']))
+        with open(desc_file_path, 'w') as desc:
+            desc.write(json.dumps(desc_dict))
+        return desc_file_path
+
+    def buffer_data(self, data_pkg, allele_index):
+        """
+        Copies data_pkg to buffered data copy
+        """
         (samp_maps, net_map, gene_map, expression_matrix) = data_pkg
-        rn = str(random.randint(10000, 99999))
+        exp = gpudata.Expression( expression_matrix )
+        exp.createBuffer( self.sample_block_size, buff_dtype=np.float32 )
+        samp = gpudata.SampleMap( samp_maps[allele_index])
+        samp.createBuffer( self.sample_block_size, buff_dtype=np.int32 )
+        gene = gpudata.GeneMap( gene_map )
+        gpudata.createBuffer( self.npairs_block_size, buff_dtype=np.int32 )
+        net = gpudata.NetworkMap( net_map )
+        gpudata.createBuffer( self.nets_block_size, buff_dtype=np.int32 )
+        return ( samp.buffer_data, net.buffer_data,
+                                        gene.buffer_data, exp.buffer_data )
+
+    def save_data(self, data_pkg, file_id):
+        """
+        Writes data_pkg files to disk and returns the file names
+        in (samp_file, net_file, gene_file, exp_file)
+        """
+        (samp_maps, net_map, gene_map, expression_matrix) = data_pkg
+        rn =file_id
         with open(op.join(self.working_dir, '_'.join(['sm',rn])), 'wb') as df:
             np.save(df, samp_maps)
         with open(op.join(self.working_dir, '_'.join(['nm',rn])), 'wb') as df:
@@ -186,6 +216,10 @@ class DataNode(MPINode):
         with open(op.join(self.working_dir, '_'.join(['em',rn])), 'wb') as df:
             np.save(df, expression_matrix)
 
+        return (op.join(self.working_dir, '_'.join(['sm',rn])),
+        op.join(self.working_dir, '_'.join(['nm',rn])),
+        op.join(self.working_dir, '_'.join(['gm',rn])),
+        op.join(self.working_dir, '_'.join(['em',rn])) )
 
     def kNearest(self,compare_list,samp_name, samp_age, k):
         """
@@ -351,13 +385,12 @@ class DataNode(MPINode):
             sample_allele[allele] = self.getSamplesByAllele(strain,allele)
             for samp_name in sample_names:
                 samp_age = self._mi.getAge(samp_name)
-                neighbors = self.kNearest(sample_allele[allele], samp_name, samp_age, self.k) 
+                neighbors = self.kNearest(sample_allele[allele], 
+                                                 samp_name, samp_age, self.k) 
                 samp_i = sm[samp_name]
                 for n_i, n_samp_id in enumerate(neighbors):
                     a_samp_map[samp_i, n_i] = sm[n_samp_id]
             samp_maps.append( a_samp_map )
-
-
         gene_index = []
         pw_offset = [0]
 
