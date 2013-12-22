@@ -119,7 +119,7 @@ class DataNode(MPINode):
         sd = data.SourceData()
         mi = None
         self.logger.info('init SourceData')
-        sd.load_dataframe(op.join( working_dir,'trimmed_dataframe.pandas'))
+        sd.load_dataframe( op.join( working_dir,'trimmed_dataframe.pandas') )
         #HACK!!!!!!!!!!!!!!!!!!!!!11
         #sd.load_net_info(table_name="net_info_table",source_id="c2.cp.biocarta.v4.0.symbols.gmt")
         self.logger.info('init MetaInfo')
@@ -147,20 +147,22 @@ class DataNode(MPINode):
             for i,allele in enumerate(alleles):
                 allele_gpuNode_pkg = self.buffer_data( gpuNode_pkg, i )
                 all_file_id = '-'.join([file_id, allele])
-                f_paths = self.save_data( allele_gpuNode_pkg,all_file_id )
-                self.transmit_data( f_paths )
+                f_types, f_paths = self.save_data( allele_gpuNode_pkg,all_file_id )
+                self.transmit_data(f_types, f_paths, all_file_id )
 
-    def transmit_data(self, f_paths, file_id):
+    def transmit_data(self,f_types, f_paths, file_id):
         mess = {}
         mess['file_id'] = file_id
-        mess['f_names'] = [op.split(f)[1] for f in f_paths]
+        mess['f_names'] = dict(((ft,f) for ft, f in zip(f_types, 
+                                        [op.split(f)[1] for f in f_paths])))
         conn = boto.s3.connection.S3Connection(region='us-east-1')
         bucket = conn.get_bucket(self.working_bucket)
         for f in f_paths:
             k = Key(bucket)
             k.key = op.split()[1]
-            k.set_metadata('source_machine', self.name) 
-            k.set_contents_from_filename(f)
+            if not k.exists():
+                k.set_metadata('SourceProcess', self.name) 
+                k.set_contents_from_filename(f)
 
     def sendData( self, gpuNode_pkg, gpurank):
         (samp_maps, net_map, gene_map, expression_matrix) = gpuNode_pkg
@@ -206,20 +208,36 @@ class DataNode(MPINode):
         in (samp_file, net_file, gene_file, exp_file)
         """
         (samp_maps, net_map, gene_map, expression_matrix) = data_pkg
-        rn =file_id
-        with open(op.join(self.working_dir, '_'.join(['sm',rn])), 'wb') as df:
-            np.save(df, samp_maps)
-        with open(op.join(self.working_dir, '_'.join(['nm',rn])), 'wb') as df:
-            np.save(df, net_map)
-        with open(op.join(self.working_dir, '_'.join(['gm',rn])), 'wb') as df:
-            np.save(df, gene_map)
-        with open(op.join(self.working_dir, '_'.join(['em',rn])), 'wb') as df:
-            np.save(df, expression_matrix)
+        data_map = ('sm','nm','gm','em')
+        file_paths = (self.save_matrix(matrix) for matrix in data_pkg)
+        return (data_map, file_paths)
 
-        return (op.join(self.working_dir, '_'.join(['sm',rn])),
-        op.join(self.working_dir, '_'.join(['nm',rn])),
-        op.join(self.working_dir, '_'.join(['gm',rn])),
-        op.join(self.working_dir, '_'.join(['em',rn])) )
+    def save_matrix( self, matrix ):
+        """
+        Given a numpy matrix, creates a file_name using md5 hash,
+        and if the file does not exist in the working dir, writes
+        the matrix to a file in the working dir with the created
+        file_name.
+        Returns the absolute path to the file(string)
+        """
+        f_name = self.get_file_name( matrix )
+        f_path = op.join(self.working_dir, f_name )
+        count = 0
+        while not op.exists(f_path):
+            try:
+                with open(f_path, 'wb') as df:
+                    np.save(df, matrix )
+            except:
+                count += 1
+                time.sleep(.1 * random.random())
+                if count > 10:
+                    raise
+        return f_path
+
+    def get_file_name(self, nd_array):
+        m = hashlib.md5()
+        m.update(nd_array)
+        return m.hexdigest()
 
     def kNearest(self,compare_list,samp_name, samp_age, k):
         """
