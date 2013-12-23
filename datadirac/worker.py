@@ -20,6 +20,9 @@ import boto
 import copy
 from boto.exception import S3ResponseError
 
+#tags
+WORKER_READY = 123
+WORKER_EXIT = 321
 #original source for this is in tcDirac/tcdirac/workers
 #on the subcluster branch
 class NodeFactory:
@@ -72,23 +75,23 @@ class MPINode:
         working_dir = self.working_dir
         data_source_bucket = self.ds_bucket
    
-        while not op.exists(op.join( working_dir,'metadata.txt')):
+        while not op.exists(op.join( working_dir, self.meta_file)):
             try:
                 conn = boto.connect_s3()
                 b = conn.get_bucket(data_source_bucket)
                 k = Key(b)
-                k.key = 'metadata.txt'
-                k.get_contents_to_filename(op.join( working_dir,'metadata.txt'))
+                k.key = self.meta_file
+                k.get_contents_to_filename(op.join( working_dir,self.meta_file))
             except:
                 time.sleep(random.random())
 
-        while not op.exists(op.join( working_dir, 'trimmed_dataframe.pandas')):
+        while not op.exists(op.join( working_dir, self.data_file)):
             conn = boto.connect_s3()
             try:
                 b = conn.get_bucket(self.working_bucket)
                 k = Key(b)
                 k.key ='trimmed_dataframe.pandas'
-                k.get_contents_to_filename(op.join( working_dir,'trimmed_dataframe.pandas'))
+                k.get_contents_to_filename(op.join( working_dir, self.data_file))
             except S3ResponseError:
                 print "Have you run ~/hdproject/utilities/hddata_process.py lately"
                 raise
@@ -108,22 +111,42 @@ class DataNode(MPINode):
         self._srt_cache = {}
         self._sample_x_allele = {}
         self._pathways = None
+        self.to_gpu_sqs = None
+        self.to_data_sqs = None
 
-    def getData(self, working_dir, working_bucket, ds_bucket,k):
-        self.working_dir = working_dir
-        self.working_bucket = working_bucket
-        self.ds_bucket = ds_bucket
-        self.k = k
-        self.makeDirs([self.working_dir])
+    def master_init(self):
+        """
+        Data Master recvs initial instructions from Master server
+        """
+        self.world_comm.barrier()
+
+    def cluster_init(self):
+        """
+        Worker nodes receive initial settings from Master
+        """
+        self.logger.info("Cluster Init Starting")
+        self.data_sqs_queue = self.world_comm.bcast()
+        self.gpu_sqs_queue = self.world_comm.bcast()
+        self.k = self.world_comm.bcast()
+        self.working_dir = self.world_comm.bcast() 
+        self.working_bucket = self.world_comm.bcast()
+        self.ds_bucket = self.world_comm.bcast()
+        self.data_file = self.world_comm.bcast()
+        self.meta_file = self.world_comm.bcast()
+        self.data_log_dir = self.world_comm.bcast()
+        self.logger.info("Cluster Init Complete")
+
+    def getData(self):
+        self.master_init()
+        self.cluster_init()
+        self.makeDirs([self.working_dir, self.data_log_dir])
         self._getDataFiles()
         sd = data.SourceData()
         mi = None
         self.logger.info('init SourceData')
-        sd.load_dataframe( op.join( working_dir,'trimmed_dataframe.pandas') )
-        #HACK!!!!!!!!!!!!!!!!!!!!!11
-        #sd.load_net_info(table_name="net_info_table",source_id="c2.cp.biocarta.v4.0.symbols.gmt")
+        sd.load_dataframe( op.join( working_dir, self.data_file) )
         self.logger.info('init MetaInfo')
-        mi = data.MetaInfo(op.join(self.working_dir,'metadata.txt'))
+        mi = data.MetaInfo(op.join(self.working_dir, self.meta_file ))
         self.logger.info("Broadcasting SourceData and MetaInfo")
         self.logger.debug("Getting sourcedata and metainfo")
         sd.set_net_info(world_comm.bcast(None, root=0))
@@ -132,23 +155,78 @@ class DataNode(MPINode):
         self.logger.debug("Received SourceData and MetaInfo")
         self._pathways = self._getPathways()
 
+    def save_log(self, log):
+        m = hashlib.md5()
+        m.update( log )
+        with open(op.join(self.data_log_dir, m.hexdigest()), 'w') as mylog:
+            mylog.write( log )
+
+    def transmit_sqs( self, sqs_msgs, sqs_queue ):
+        """
+        Given a list of json encoded strings,
+            passes batches of messages to SQS
+        """
+        conn = boto.sqs.connect_to_region( 'us-east-1' )
+        my_queue = conn.get_queue(sqs_queue)
+        max_msgs = 10
+        msg_batch = []
+        for msg in sqs_msgs:
+            if len(msg_batch) == max_msgs:
+                my_queue.write_batch( msg_batch )
+                msg_batch = []
+            msg_batch.append( Message( body=msg ) )
+        if len(msg_batch):
+            my_queue.write_batch( msg_batch )
+
     def run(self):
         desc_file_path = {}
-        shuffle, strain, num_runs = self.comm.recv( source=0 )
-        strains = self.getStrains()
-        mystrain = strains[strain]
-        while num_runs > 0:
-            num_runs -= 1
-            dataNode_pkg, gpuNode_pkg = self.packageData( mystrain, shuffle )
-            file_id = self.create_file_id()
-            desc_file = self.save_description(dataNode_pkg, file_id)
-            desc_file_path[file_id] = desc_file
-            _,alleles,_ = dataNode_pkg
-            for i,allele in enumerate(alleles):
-                allele_gpuNode_pkg = self.buffer_data( gpuNode_pkg, i )
-                all_file_id = '-'.join([file_id, allele])
-                f_types, f_paths = self.save_data( allele_gpuNode_pkg,all_file_id )
-                self.transmit_data(f_types, f_paths, all_file_id )
+        self.world_comm.send( self.world_comm.rank, tag=WORKER_READY)
+        shuffle, strain, num_runs = self.comm.recv( source=0, tag=JOB )
+        if num_runs > 0:
+            strains = self.getStrains()
+            mystrain = strains[strain]
+            run_log = []
+            gpu_sqs_msgs = []
+            data_sqs_msgs = []
+            while num_runs > 0:
+                num_runs -= 1
+                dataNode_pkg, gpuNode_pkg = self.packageData(mystrain, shuffle)
+                file_id = self.create_file_id()
+                desc = self.init_description(dataNode_pkg, file_id)
+                desc['strain'] = mystrain
+                desc['shuffle'] = shuffle
+                _, alleles, _ = dataNode_pkg
+                data_sqs_msg = {}
+                data_sqs_msg['file_id'] = file_id
+                data_sqs_msg['strain'] = strain
+                data_sqs_msg['shuffle'] = shuffle
+                data_sqs_msg['result_files'] = {}
+                for i,allele in enumerate(alleles):
+                    allele_gpuNode_pkg = self.buffer_data( gpuNode_pkg, i )
+                    all_file_id = '-'.join([file_id, allele])
+                    desc['data_matrices'][all_file_id] = {}
+                    data_sqs_msg['result_files'][allele] = '_'.join(
+                     [all_file_id, 'rms'])#see gpudirac.subprocesses.packer:138
+                    f_types, f_paths = self.save_data( 
+                                             allele_gpuNode_pkg, all_file_id )
+                    self.transmit_data(f_types, f_paths, all_file_id )
+                    gpu_sqs_msg = {}
+                    gpu_sqs_msg['file_id'] = all_file_id
+                    gpu_sqs_msg['f_names'] = {}
+                    for ft, fp in zip(f_types, fpaths):
+                        _ ,f_tail = op.split(fp)
+                        desc['data_matrices'][all_file_id][ft] = f_tail
+                        gpu_sqs_msg['f_names'][ft] = f_tail
+                    gpu_sqs_msgs.append( json.dumps( gpu_sqs_msg ) )
+                data_sqs_msgs.append( json.dumps( data_sqs_msg )
+                run_log.append( json.dumps( desc ) )
+            self.save_log( '\n'.join( run_log ) + '\n' )
+            self.transmit_sqs( gpu_sqs_msgs, self.to_gpu_sqs )
+            self.transmit_sqs( data_sqs_msgs, self.to_data_sqs )
+            return True
+        else:
+            self.world_comm.send(self.world_comm.rank, tag=WORKER_EXIT)
+            return False
 
     def transmit_data(self,f_types, f_paths, file_id):
         mess = {}
@@ -161,7 +239,6 @@ class DataNode(MPINode):
             k = Key(bucket)
             k.key = op.split()[1]
             if not k.exists():
-                k.set_metadata('SourceProcess', self.name) 
                 k.set_contents_from_filename(f)
 
     def sendData( self, gpuNode_pkg, gpurank):
@@ -171,7 +248,7 @@ class DataNode(MPINode):
         self.world_comm.send( gene_map, dest=gpurank )
         self.world_comm.send( expression_matrix, dest=gpurank)
 
-    def save_description( self, dataNode_pkg, file_id):
+    def init_description( self, dataNode_pkg, file_id):
         """
         Saves the data description to a file
         """
@@ -181,10 +258,8 @@ class DataNode(MPINode):
         desc_dict['sample_names'] = sample_names
         desc_dict['alleles'] = alleles
         desc_dict['sample_allele'] = sample_allele
-        desc_file_path = op.join(self.working_dir, '_'.join([file_id, 'desc']))
-        with open(desc_file_path, 'w') as desc:
-            desc.write(json.dumps(desc_dict))
-        return desc_file_path
+        desc_dict['data_matrices'] = {}
+        return desc_dict
 
     def buffer_data(self, data_pkg, allele_index):
         """
@@ -263,7 +338,6 @@ class DataNode(MPINode):
 
         samp_compare = [s for a,s in compare_list[l:u+1]]
         return samp_compare
-    
 
     def getAlleles(self, cstrain):
         if cstrain not in self._nominal_alleles:
@@ -299,7 +373,6 @@ class DataNode(MPINode):
         returns dict[allele] -> list:[(age_1,samp_name_1), ... ,(age_n,samp_name_n)] sorted by age
         """
         mi = self._mi
-
         samples = {}
         if not shuffle:
             for allele in self.getAlleles(cstrain):
@@ -317,7 +390,6 @@ class DataNode(MPINode):
                 all_samples = all_samples[n:]
         self._sample_x_allele[cstrain] = samples 
 
-
     def initStrain(self, cstrain, mypws, shuffle=False):
         self._cstrain = cstrain
         self._partitionSamplesByAllele(cstrain, shuffle)
@@ -329,7 +401,6 @@ class DataNode(MPINode):
     def genSRTs(self, cstrain, pw):
         #self.p.start("genSRTs")
         if (cstrain, pw) not in self._srt_cache:
-          
             srts = None 
             sd = self._sd
             mi = self._mi
@@ -339,7 +410,6 @@ class DataNode(MPINode):
             expFrame = sd.getExpression( pw, samples)
             srts = dirac.getSRT( expFrame )
             self._srt_cache[(cstrain,pw)] = srts
-
         return self._srt_cache[(cstrain, pw)]
 
     def getRMS(self, rt, srt):
@@ -354,7 +424,6 @@ class DataNode(MPINode):
             table.to_pickle(op.join(self._working_dir,ofile_name))
 
     def classify( self, comm=None ):
-        
         if comm is None:
             comm = self.world_comm
         class_dict = {}
@@ -366,9 +435,7 @@ class DataNode(MPINode):
                 alleles = self.getAlleles(strain)
                 for b_allele in alleles:
                     samps = [s for a,s in self.getSamplesByAllele(strain, b_allele)]
-
                     b_rows = ["%s_%s" %(pw,allele) for allele in alleles if allele != b_allele]
-                    
                     for samp in samps:
                         class_dict[strain][samp][pw] = 1
                         for row in b_rows:
@@ -378,14 +445,11 @@ class DataNode(MPINode):
         self._classification_res = class_dict
         return class_dict
 
-    
-
     def packageData(self, strain, shuffle=False):
         """
         return exp for a strain
         return 
         """
-    
         self._partitionSamplesByAllele( strain, shuffle)
 
         sample_names = self._getSamplesByStrain(strain)
@@ -411,7 +475,6 @@ class DataNode(MPINode):
             samp_maps.append( a_samp_map )
         gene_index = []
         pw_offset = [0]
-
         for pw in self._pathways:
             genes = self._sd.getGenes(pw)
             for g1,g2 in itertools.combinations(genes,2):
@@ -429,19 +492,40 @@ class MasterDataNode(DataNode):
         DataNode.__init__(self, world_comm )   
         self._status = np.zeros((world_comm.size,), dtype=int)
 
-    def getData(self, working_dir, working_bucket, ds_bucket,k):
-        self.working_dir = working_dir
-        self.working_bucket = working_bucket
-        self.ds_bucket = ds_bucket
+    def master_init(self):
+        #DEBUG
+        self.data_sqs_queue = 'gpudirac_data_agg'
+        self.gpu_sqs_queue = 'gpudirac_gpu_source'
+        self.k = 5
+        self.working_dir = '/scratch/sgeadmin/working'
+        self.working_bucket = 'gpudirac_to_gpu'
+        self.ds_bucket = 'hd_source_data'
+        self.data_log_dir = '/scratch/sgeadmin/data_log'
+        self.data_file = 'trimmed_dataframe.pandas'
+        self.network_table = "net_info_table"
+        self.network_source = "c2.cp.biocarta.v4.0.symbols.gmt"
+        self.world_comm.barrier()
 
-        self.makeDirs([self.working_dir])
+    def cluster_init(self):
+        self.data_sqs_queue = self.world_comm.bcast(self.data_sqs_queue)
+        self.gpu_sqs_queue = self.world_comm.bcast(self.gpu_sqs_queue )
+        self.k = self.world_comm.bcast(self.k )
+        self.working_dir = self.world_comm.bcast(self.working_dir ) 
+        self.working_bucket = self.world_comm.bcast(self.working_bucket)
+        self.ds_bucket = self.world_comm.bcast(self.ds_bucket)
+        self.data_file = self.world_comm.bcast(self.data_file )
+        self.data_log_dir = self.world_comm.bcast()
+
+    def getData(self):
+
+        self.makeDirs([self.working_dir, self.data_log_dir])
         self._getDataFiles()
         sd = data.SourceData()
         mi = None
         self.logger.info('init SourceData')
-        sd.load_dataframe(op.join( working_dir,'trimmed_dataframe.pandas'))
-        #HACK!!!!!!!!!!!!!!!!!!!!!11
-        sd.load_net_info(table_name="net_info_table",source_id="c2.cp.biocarta.v4.0.symbols.gmt")
+        sd.load_dataframe(op.join( working_dir, self.data_file))
+        sd.load_net_info(table_name=self.net_info_table,
+                            source_id=self.network_source)
         self.logger.info('init MetaInfo')
         mi = data.MetaInfo(op.join(self.working_dir,'metadata.txt'))
         self.logger.info("Broadcasting SourceData and MetaInfo")
@@ -450,92 +534,28 @@ class MasterDataNode(DataNode):
         self._sd = sd
         self._mi = mi
         self._pathways = self._getPathways()
-        self.k = k
 
     def run(self):
-        quit = False
-        strain_counter = self._firstBurst()
-        status_buffer = np.zeros((1,), dtype=int)
-        status = MPI.Status()
-        while not quit:
-            self.world_comm.Recv( status_buffer, source=MPI.ANY_SOURCE, status=status )
-            if status_buffer[0] == 0:
-                self.world_comm.Isend(np.array([strain_counter%len(self.strains)],dtype=int), dest=status.source)
-                strain_counter += 1
-            elif status_buffer[0] == 1:
-                self.world_comm.Send( np.array([2], dtype=int), dest=0 )
-                self.world_comm.Recv( status_buffer, source=0)
-
-    def _firstBurst(self):
+        total_runs = 105
         strains = self.getStrains()
-        self._strains = strains
-        strain_counter = 0
-        for i in range(1, self.world_comm.size):
-            self.world_comm.Isend(np.array([strain_counter%len(strains)],dtype=int), dest=i)
-            self._status[i] = 1 #preparing data
-            strain_counter += 1
-        return strain_counter 
-        
-class GPUNode(MPINode):
-    def __init__(self, world_comm, host_comm, type_comm, master_comm ):
-        pass
-        """
-        MPINode.__init__(self, world_comm, host_comm, type_comm, master_comm )   
-
-        self.logger.debug("In GPUNode init")
-        self.logger.debug("Cuda Initialized")
-        self.ctx = None
-
-    def _startCTX(self, dev_id):
-        dev = cuda.Device(dev_id)
-        self.ctx = dev.make_context()
-
-    def _endCTX(self):
-        self.ctx.pop()
-        self.ctx = None
-
-    def getStatus(self):
-        self.logger.debug("getStatus")
-        self.logger.debug("exitted getStatus")
-
-    def run(self):
+        strain = strains[0] 
+        quit = False
         status_buffer = np.zeros((1,), dtype=int)
-        while not quit:
-            
-            self.host_comm.Recv(status_buffer)
-            if status_buffer < 0:
-                quit = True
-            else:
-                source, samp_maps, net_map, gene_map, expression_matrix = self.recvData()
-                self.host_comm.Send(np.array([1],dtype=int))
-                self.host_comm.Recv(status_buffer)
-                if status_buffer[0] < 0:
-                    quit = True
-                else:
-                    mygpu = status_buffer[0]
-                    result = self.runProcess( samp_maps, net_map, gene_map, expression_matrix, gpu=mygpu )
-                    self.world_comm.send(result, dest=source)
-                    self.host_comm.Isend(np.array([0],dtype=int))
-
-
-
-    def runProcess( self,samp_maps, net_map, gene_map, expression_matrix, gpu ):
-        self._startCTX(self, gpu)
-        #here goes gpu
-        result = None
-        print "GPU vroom, vroom"
-        self._endCTX()
-        self.host_comm.Isend(np.array([2],dtype=int))
-        return result
-        
-
-    def recvData(self):
         status = MPI.Status()
-        samp_maps = self.world_comm.recv( source=MPI.ANY_SOURCE, status=status )
-        net_map = self.world_comm.recv( source=status.source )
-        gene_map = self.world_comm.recv(  source=status.source )
-        expression_matrix = self.world_comm.recv(  source=status.source )
-        return status.source, samp_maps, net_map, gene_map, expression_matrix"""
+        partial_runs = 10
+        while total_runs > 0:
+            worker_ready_id = self.world_comm.recv(source=MPI.ANY_SOURCE, tag=WORKER_READY )
+            message = (True, strain, min(partial_runs, total_runs))
+            self.comm.send(dest=worker_ready_id, obj=message, tag=JOB)
+            total_runs -= partial_runs
+       exit_count = 0
+       while exit_count < (self.world_comm.size - 1):
+            worker_ready_id = self.world_comm.recv(source=MPI.ANY_SOURCE, tag=WORKER_READY )
+            message = (True, None, -1)
+            self.comm.send(dest=worker_ready_id, obj=message, tag=JOB)
+            self.comm.recv(source=worker_ready_id, tag=WORKER_EXIT)
+            exit_count += 1
+       return False
 
 if __name__ == "__main__":
     import time
@@ -544,6 +564,7 @@ if __name__ == "__main__":
                 'working_bucket':'hd_working_0', 
                 'ds_bucket':'hd_source_data', 
                 'k':5
+                'logging_dir':'/scratch/sgeadmin/logging/'
                 }
     world_comm = MPI.COMM_WORLD
     level = logging.DEBUG
@@ -568,7 +589,8 @@ if __name__ == "__main__":
 
     nf = NodeFactory( world_comm )
     thisNode = nf.getNode()
-    thisNode.getData(**worker_settings)
-    thisNode.run()
+    thisNode.getData()
+    while thisNode.run():
+        self.logger.info("Completed one run")
     world_comm.Barrier()
     
