@@ -42,29 +42,29 @@ class SourceData:
         See datadirac.utils.gmt_process for details
         """
         self.net_info = NetworkInfo(table_name,source_id)
-        self.initGenes()
+        self.init_genes()
 
     def set_net_info(self, net_info):
         """
         Sets net_info from NetworkInfo object
         """
         self.net_info = net_info
-        self.initGenes()
+        self.init_genes()
 
-    def getExpression(self, sample_ids):
+    def get_expression(self, sample_ids):
         """
         Return all gene expression given list of sample_ids
         """
         df = self.source_dataframe
         return df.loc[:, sample_ids]
 
-    def getPathways(self):
+    def get_pathways(self):
         """
         Returns list of all pathways
         """
-        return self.net_info.getPathways()
+        return self.net_info.get_pathways()
 
-    def getGenes(self, pathway_id):
+    def get_genes(self, pathway_id):
         """
         Returns list of all genes for a given pathway_id
 
@@ -72,19 +72,19 @@ class SourceData:
         not available in the dataset
         """
         ni = self.net_info
-        genes = ni.getGenes(pathway_id)
-        if not ni.isClean(pathway_id):
+        genes = ni.get_genes(pathway_id)
+        if not ni.is_clean(pathway_id):
             gset =  self.genes
             genes = [g for g in genes if g in gset]
-            ni.updateGenes( pathway_id, genes )
-        return self.net_info.getGenes(pathway_id)
+            ni.update_genes( pathway_id, genes )
+        return self.net_info.get_genes(pathway_id)
 
-    def initGenes(self):
+    def init_genes(self):
         """
         Filter and initialize pathways
         """
-        for pw in self.getPathways():
-            self.getGenes(pw)
+        for pw in self.get_pathways():
+            self.get_genes(pw)
 
 class MetaInfo:
     """
@@ -99,7 +99,7 @@ class MetaInfo:
         for i in self.metadata.index:
             assert( self.metadata['sample_id'][i] == i)
 
-    def getSampleIDs(self, strain, allele=None):
+    def get_sample_ids(self, strain, allele=None):
         """
         Returns list of sample ids for given strain [and allele]
         """
@@ -109,13 +109,13 @@ class MetaInfo:
         else:
             return md[(md['strain'] == strain) & (md['allele_nominal'] == allele)]['sample_id'].tolist()
 
-    def getStrains(self):
+    def get_strains(self):
         """
         Returns list of all strains
         """
         return self.metadata['strain'].unique().tolist()
 
-    def getNominalAlleles(self, strain=None):
+    def get_nominal_alleles(self, strain=None):
         """
         Returns list of available nominal alleles [for given strain].
         """
@@ -125,7 +125,7 @@ class MetaInfo:
         else:
             return md[md['strain'] == strain]['allele_nominal'].unique().tolist()
 
-    def getAge(self, sample_id):
+    def get_age(self, sample_id):
         """
         Returns the age of the given sample_id
         """
@@ -147,7 +147,7 @@ class NetworkInfo:
         self.gene_clean = {}
         self.pathways = []
 
-    def getGenes(self, pathway_id, cache=True):
+    def get_genes(self, pathway_id, cache=True):
         """
         Returns list of genes in pathway.
 
@@ -163,7 +163,7 @@ class NetworkInfo:
             self.gene_clean[pathway_id] = False
         return self.gene_map[pathway_id]
 
-    def getPathways(self):
+    def get_pathways(self):
         """
         Returns list of pathways
         """
@@ -179,13 +179,13 @@ class NetworkInfo:
                 self.gene_clean[pathway_id] = False
         return self.pathways
 
-    def isClean(self, pathway_id):
+    def is_clean(self, pathway_id):
         """
         Returns true if the genes in the pathway are subset of dataset genes
         """
         return self.gene_clean[pathway_id]
 
-    def updateGenes(self, pathway_id, genes):
+    def update_genes(self, pathway_id, genes):
         """
         Updates gene list for pathway_id to genes(list)
         Primarily a helper function to allow filtering of 
@@ -194,12 +194,6 @@ class NetworkInfo:
         self.gene_map[pathway_id] = genes
         self.gene_clean[pathway_id] = True
 
-    def clearCache(self):
-        """
-        Forget everything
-        """
-        self.gene_map = {}
-        self.gene_clean = {}
     def __getstate__(self):
         odict = self.__dict__.copy() # copy the dict since we change it
         del odict['logger']              # remove filehandle entry
@@ -219,13 +213,13 @@ if __name__ == "__main__":
     sd = SourceData()
     sd.load_dataframe(data_file)
     sd.load_net_info(table_name="net_info_table",source_id="c2.cp.biocarta.v4.0.symbols.gmt")
-    sd.initGenes()
-    sd.getPathways()
-    #print [x for x in sd.getPathways() if x == 'BIOCARTA_AKAPCENTROSOME_PATHWAY']
-    #print sd.getGenes(pathway_id)
+    sd.init_genes()
+    sd.get_pathways()
+    #print [x for x in sd.get_pathways() if x == 'BIOCARTA_AKAPCENTROSOME_PATHWAY']
+    #print sd.get_genes(pathway_id)
     mi = MetaInfo(meta_file)
     #print mi.metadata
-    for sid in mi.getSampleIDs('FVB'):
-        mi.getAge(sid)
-    sd.getExpression(mi.getSampleIDs('FVB'))
+    for sid in mi.get_sample_ids('FVB'):
+        mi.get_age(sid)
+    sd.get_expression(mi.get_sample_ids('FVB'))
 
