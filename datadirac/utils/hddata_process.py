@@ -140,7 +140,11 @@ def mapNewData(working_bucket, data, meta_data, anno_data,syn_file,agilent_file,
     k.key = 'trimmed_dataframe.pandas'
     k.storage_class = 'REDUCED_REDUNDANCY'
     k.set_contents_from_filename(saved)
- 
+
+    k.key = 'metadata.txt'
+    k.storage_class = 'REDUCED_REDUNDANCY'
+    k.set_contents_from_filename(meta_data)
+
     return saved,df 
 
 if __name__ == "__main__":

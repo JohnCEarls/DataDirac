@@ -103,7 +103,7 @@ class MPINode:
     Abstract base class for an mpi process
     """
     def __init__(self, world_comm ):
-        self.name = 'MPINode_[%i]' % world_comm.rank
+        self.name = 'MPINode_%i' % world_comm.rank
         self.logger = logging.getLogger(self.name)
         self.world_comm = world_comm
         self.nb = np.empty((1,), dtype=int)#nullbuffer
@@ -178,7 +178,7 @@ class MPINode:
 class DataNode(MPINode):
     def __init__(self, world_comm ):
         MPINode.__init__(self, world_comm )
-        self.name = 'DataNode_[%i]' % world_comm.rank
+        self.name = 'DataNode_%i' % world_comm.rank
         self.logger = logging.getLogger(self.name)
         self._nominal_alleles = {}
         self._sd = None #data.SourceData object
@@ -208,6 +208,7 @@ class DataNode(MPINode):
         self.k = self.world_comm.bcast()
         self.logger.debug("k: %i" % self.k)
         self.working_dir = self.world_comm.bcast() 
+        self.working_dir = op.join( self.working_dir, self.name )
         self.logger.debug("working_dir: %s" % self.working_dir)
         self.working_bucket = self.world_comm.bcast()
         self.logger.debug("working_bucket: %s" % self.working_bucket)
@@ -306,15 +307,13 @@ class DataNode(MPINode):
         """
         conn = boto.sqs.connect_to_region( 'us-east-1' )
         my_queue = conn.get_queue(sqs_queue)
-        if my_queue is None:
-            print sqs_queue
         max_msgs = 10
         msg_batch = []
-        for msg in sqs_msgs:
+        for i, msg in enumerate(sqs_msgs):
             if len(msg_batch) == max_msgs:
                 my_queue.write_batch( msg_batch )
                 msg_batch = []
-            msg_batch.append( Message( body=msg ) )
+            msg_batch.append( (i,msg ,0) )
         if len(msg_batch):
             my_queue.write_batch( msg_batch )
 
@@ -328,10 +327,11 @@ class DataNode(MPINode):
         self.logger.debug("Sending data for file_id[%s]"%file_id)
         for f in f_paths:
             k = Key(bucket)
-            k.key = op.split()[1]
-            print k.key
+            k.key = op.split(f)[1]
             if not k.exists():
                 k.set_contents_from_filename(f)
+            self.logger.debug("Sending from [%s] to [s3://%s/%s]" % \
+                    (f, self.working_bucket, k.key) )
 
     def _buffer_data(self, data_pkg, allele_index):
         """
@@ -359,8 +359,8 @@ class DataNode(MPINode):
         in (samp_file, net_file, gene_file, exp_file)
         """
         (samp_maps, net_map, gene_map, expression_matrix) = data_pkg
-        data_map = ('sm','nm','gm','em')
-        file_paths = (self._save_matrix(matrix) for matrix in data_pkg)
+        data_map = ['sm','nm','gm','em']
+        file_paths = [self._save_matrix(matrix) for matrix in data_pkg]
         return (data_map, file_paths)
 
     def _save_matrix( self, matrix ):
@@ -540,8 +540,8 @@ class MasterDataNode(DataNode):
     Takes a communicator object.
     """
     def __init__(self, world_comm ):
-        DataNode.__init__(self, world_comm )   
-        self._status = np.zeros((world_comm.size,), dtype=int)
+        DataNode.__init__(self, world_comm )
+        self.name = "MasterDataNode"
 
     def _master_init(self):
         """
@@ -568,7 +568,6 @@ class MasterDataNode(DataNode):
         self.sample_block_size = 32
         self.npairs_block_size = 16
         self.nets_block_size = 8
-
         self.world_comm.barrier()
 
     def _cluster_init(self):
@@ -620,16 +619,19 @@ class MasterDataNode(DataNode):
         quit = False
         status = MPI.Status()
         partial_run_size = self.partial_run_size 
+        self.logger.debug("Each run has a size of [%i]" % partial_run_size)
         total_runs = self.total_runs
         while total_runs > 0:
             self.logger.debug("Getting ready worker")
             worker_ready_id = self.world_comm.recv(source=MPI.ANY_SOURCE, 
                                                     tag=WORKER_READY )
-            self.logger.debug("Sending work to [%i]"
             partial_runs = min(partial_run_size, total_runs)
+            self.logger.debug("Sending work to [%i] num_runs[%i]" % \
+                    (worker_ready_id, partial_runs ))
             message = (True, strain, min(partial_runs, total_runs))
             self.world_comm.send(dest=worker_ready_id, obj=message, tag=WORKER_JOB)
             total_runs -= partial_runs
+            self.logger.debug("Runs remaining[%i]" % total_runs)
         exit_count = 0
         while exit_count < (self.world_comm.size - 1):
             worker_ready_id = self.world_comm.recv(source=MPI.ANY_SOURCE, 
@@ -642,7 +644,7 @@ class MasterDataNode(DataNode):
 
     @property
     def partial_run_size(self):
-        return (self.total_runs/3*(self.world_comm.size -1)) + 1
+        return (self.total_runs/(3*(self.world_comm.size -1))) + 1
 
 if __name__ == "__main__":
     import time
@@ -671,5 +673,5 @@ if __name__ == "__main__":
     thisNode = nf.getNode()
     thisNode.get_data()
     while thisNode.run():
-        self.logger.info("Completed one run")
+        thisNode.logger.info("Completed one run")
     world_comm.Barrier()
