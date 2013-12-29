@@ -16,14 +16,14 @@ import itertools
 import pandas
 import numpy as np
 import time
-from profiler import MPIProfiler
 import random
 from boto.s3.key import Key
 import boto
 import copy
 from boto.exception import S3ResponseError
 from boto.sqs.message import Message
-
+import debug
+import sys
 #tags
 WORKER_READY = 123
 WORKER_EXIT = 321
@@ -655,8 +655,7 @@ if __name__ == "__main__":
     logfile = "/scratch/sgeadmin/log_mpi_r%i.txt"%world_comm.Get_rank()
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     logging.basicConfig(filename=logfile, level=level, format=log_format)
-
-    import sys
+    debug.initMPILogger("/scratch/sgeadmin/logging/worker.log", level = level)
 
     root = logging.getLogger()
 
