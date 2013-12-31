@@ -31,13 +31,13 @@ WORKER_JOB = 333
 #original source for this is in tcDirac/tcdirac/workers
 #on the subcluster branch
 class NodeFactory:
-    def __init__(self, world_comm):
+    def __init__(self, world_comm, log_dir, working_dir, init_q):
         self.logger = logging.getLogger('NodeFactory_[%i]' % world_comm.rank)
         self.logger.info("NodeFactory init")
         if world_comm.rank > 0:
-            self.thisNode = DataNode(world_comm)
+            self.thisNode = DataNode(world_comm, log_dir, working_dir, init_q)
         else:
-            self.thisNode = MasterDataNode(world_comm)
+            self.thisNode = MasterDataNode(world_comm, log_dir, working_dir, init_q)
 
     def getNode(self):
         return self.thisNode
@@ -176,7 +176,7 @@ class MPINode:
                 time.sleep(random.random())
 
 class DataNode(MPINode):
-    def __init__(self, world_comm ):
+    def __init__(self, world_comm, log_dir, working_dir, init_q):
         MPINode.__init__(self, world_comm )
         self.name = 'DataNode_%i' % world_comm.rank
         self.logger = logging.getLogger(self.name)
@@ -189,6 +189,9 @@ class DataNode(MPINode):
         self._pathways = None
         self.to_gpu_sqs = None
         self.to_data_sqs = None
+        self.log_dir = log_dir
+        self.working_dir = working_dir
+        self.init_q = init_q
 
     def _master_init(self):
         """
@@ -227,6 +230,7 @@ class DataNode(MPINode):
                            self.sample_block_size, 
                            self.npairs_block_size, 
                            self.nets_block_size))
+        self.gpu_mem_max = self.world_comm.bcast( self.gpu_mem_max ) 
         self.logger.info("Cluster init complete")
 
     def  _handle_net_info( self, sd ):
@@ -539,36 +543,103 @@ class MasterDataNode(DataNode):
     The mpi master for a cluster of data generation nodes.
     Takes a communicator object.
     """
-    def __init__(self, world_comm ):
+    def __init__(self, world_comm, log_dir, working_dir, init_q):
         DataNode.__init__(self, world_comm )
         self.name = "MasterDataNode"
+        self.log_dir = log_dir
+        self.working_dir = working_dir
+        self.init_q_name = init_q
 
     def _master_init(self):
         """
         Retrieves settings from master server
         """
-        #DEBUG
-        self.data_sqs_queue = 'gpudirac_data_agg'
-        self.gpu_sqs_queue = 'gpudirac_gpu_source'
+        self.logger("Generating command queues")
+        self._generate_command_queues()
+        md = boto.utils.get_instance_metadata()
+        self._availabilityzone = md['placement']['availability-zone']
+        self._region = self._availabilityzone[:-1]
+        init_msg = {'message-type':'data-gen-init',
+                    'name':self.name,
+                    'instance-id': md['instance-id'],
+                    'command': self.command_q_name,
+                    'response': self.response_q_name,
+                    'zone': self._availabilityzone}
+        m = Message( body=json.dumps( init_msg ) )
+        conn = boto.sqs.connect_to_region( 'us-east-1' )
+        init_q = None
+        while init_q is None and ctr < 6:
+            init_q = conn.get_queue( self.init_q_name  )
+            time.sleep(1+ctr**2)
+            ctr += 1
+        if init_q is None:
+            self.logger.error("Unable to connect to init q")
+            raise Exception("Unable to connect to init q")
+        init_q.write( m )
+
+        command_q = conn.get_queue( self.command_q_name )
+        command = None
+        while command is None:
+            command = command_q.read( wait_time_seconds=30)
+            if command is None:
+                self.logger.warning("No message in command queue.")
+        init_msg = command.get_body()
+        command_q.delete_message( command )
+        self.logger.info("Init Message %s" % init_msg)
+        parsed = json.loads(init_msg)
+        self._handle_command( parsed )
+
+
+        
+
+    def _set_settings( self, settings ):
+
+
+        self.data_sqs_queue = settings['data_sqs_queue']
+        self.gpu_sqs_queue = settings['gpu_sqs_queue']
         conn = boto.sqs.connect_to_region('us-east-1')
         conn.create_queue( self.data_sqs_queue )
         conn.create_queue( self.gpu_sqs_queue )
-        self.k = 5
-        self.working_dir = '/scratch/sgeadmin/working'
-        self.working_bucket = 'gpudirac_to_gpu'
+        self.k = settings['k']
+        self.working_bucket = settings['working_bucket']
         conn = boto.connect_s3()
         conn.create_bucket( self.working_bucket )
-        self.ds_bucket = 'hd_working_0'
-        self.data_log_dir = '/scratch/sgeadmin/data_log'
-        self.data_file = 'trimmed_dataframe.pandas'
-        self.meta_file = 'metadata.txt'
-        self.network_table = "net_info_table"
-        self.network_source = "c2.cp.biocarta.v4.0.symbols.gmt"
-        self.total_runs = 105
-        self.sample_block_size = 32
-        self.npairs_block_size = 16
-        self.nets_block_size = 8
+        self.ds_bucket = settings['ds_bucket']
+        self.data_file = settings['data_file']
+        self.meta_file = settings['meta_file']
+        self.network_table = settings['network_table']
+        self.network_source = settings['network_source']
+        self.total_runs = settings['total_run']
+        self.sample_block_size = settings['sample_block_size']
+        self.npairs_block_size = settings['npairs_block_size']
+        self.nets_block_size = settings['nets_block_size']
+        self.gpu_mem_max = settings['gpu_mem_max']
+        self.logger.info("Settings inititialized")
         self.world_comm.barrier()
+
+    def _handle_command( self, command ):
+        if command['message-type'] == 'init-settings':
+            self._set_settings( command )
+
+    def _generate_command_queues(self):
+        md = boto.utils.get_instance_metadata()
+        self.command_q_name = "%s-%s-command" % (self.name, md['instance-id'])
+        self.response_q_name = "%s-%s-response" % (self.name, md['instance-id'])
+        conn = boto.sqs.connect_to_region( 'us-east-1' )
+        command_q = conn.create_queue( self.command_q_name )
+        command_q = None
+        while command_q is None:
+            #make sure command queue is accessible
+            command_q = conn.get_queue(  self.command_q_name )
+            time.sleep(1)
+        self.logger.info("Command queue[%s] created" % self.command_q_name)
+        response_q = conn.create_queue( self.response_q_name )
+        response_q = None
+        while response_q is None:
+            #make sure response queue is accessible
+            response_q = conn.get_queue(  self.response_q_name )
+            time.sleep(1)
+        self.logger.info("Response queue[%s] created" % self.response_q_name)
 
     def _cluster_init(self):
         """
@@ -600,6 +671,7 @@ class MasterDataNode(DataNode):
                            self.sample_block_size, 
                            self.npairs_block_size, 
                            self.nets_block_size))
+        self.gpu_mem_max = self.world_comm.bcast( self.gpu_mem_max ) 
         self.logger.info("Cluster init complete")
 
     def _handle_net_info(self, sd):
