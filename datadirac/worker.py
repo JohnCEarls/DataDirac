@@ -224,11 +224,11 @@ class DataNode(MPINode):
         self.data_log_dir = self.world_comm.bcast()
         self.logger.debug("data_log_dir: %s" % self.data_log_dir)
         self.sample_block_size = self.world_comm.bcast()
-        self.npairs_block_size = self.world_comm.bcast()
+        self.pairs_block_size = self.world_comm.bcast()
         self.nets_block_size = self.world_comm.bcast()
         self.logger.debug("(%i, %i, %i)" % (
                            self.sample_block_size, 
-                           self.npairs_block_size, 
+                           self.pairs_block_size, 
                            self.nets_block_size))
         self.gpu_mem_max = self.world_comm.bcast( self.gpu_mem_max ) 
         self.logger.info("Cluster init complete")
@@ -351,7 +351,7 @@ class DataNode(MPINode):
         exp = gpudata.Expression( expression_matrix )
         exp.createBuffer( self.sample_block_size, buff_dtype=np.float32 )
         gene = gpudata.GeneMap( gene_map )
-        gene.createBuffer( self.npairs_block_size, buff_dtype=np.int32 )
+        gene.createBuffer( self.pairs_block_size, buff_dtype=np.int32 )
         net = gpudata.NetworkMap( net_map )
         net.createBuffer( self.nets_block_size, buff_dtype=np.int32 )
         return ( samp.buffer_data, net.buffer_data,
@@ -593,8 +593,6 @@ class MasterDataNode(DataNode):
         
 
     def _set_settings( self, settings ):
-
-
         self.data_sqs_queue = settings['data_sqs_queue']
         self.gpu_sqs_queue = settings['gpu_sqs_queue']
         conn = boto.sqs.connect_to_region('us-east-1')
@@ -611,7 +609,7 @@ class MasterDataNode(DataNode):
         self.network_source = settings['network_source']
         self.total_runs = settings['total_run']
         self.sample_block_size = settings['sample_block_size']
-        self.npairs_block_size = settings['npairs_block_size']
+        self.pairs_block_size = settings['pairs_block_size']
         self.nets_block_size = settings['nets_block_size']
         self.gpu_mem_max = settings['gpu_mem_max']
         self.logger.info("Settings inititialized")
@@ -665,11 +663,11 @@ class MasterDataNode(DataNode):
         self.data_log_dir = self.world_comm.bcast(self.data_log_dir)
         self.logger.debug("data_log_dir: %s" % self.data_log_dir)
         self.sample_block_size = self.world_comm.bcast(self.sample_block_size)
-        self.npairs_block_size = self.world_comm.bcast(self.npairs_block_size)
+        self.pairs_block_size = self.world_comm.bcast(self.pairs_block_size)
         self.nets_block_size = self.world_comm.bcast(self.nets_block_size)
         self.logger.debug("(%i, %i, %i)" % (
                            self.sample_block_size, 
-                           self.npairs_block_size, 
+                           self.pairs_block_size, 
                            self.nets_block_size))
         self.gpu_mem_max = self.world_comm.bcast( self.gpu_mem_max ) 
         self.logger.info("Cluster init complete")
