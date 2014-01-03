@@ -208,8 +208,6 @@ class DataNode(MPINode):
         self.logger.debug("data_sqs_queue: %s" % self.data_sqs_queue )
         self.gpu_sqs_queue = self.world_comm.bcast()
         self.logger.debug("gpu_sqs_queue: %s" % self.gpu_sqs_queue )
-        self.k = self.world_comm.bcast()
-        self.logger.debug("k: %i" % self.k)
         self.working_dir = self.world_comm.bcast() 
         self.working_dir = op.join( self.working_dir, self.name )
         self.logger.debug("working_dir: %s" % self.working_dir)
@@ -249,7 +247,8 @@ class DataNode(MPINode):
             It keeps a detailed log of what it has generated to a local file.
         """
         self.world_comm.send( self.world_comm.rank, tag=WORKER_READY)
-        shuffle, strain, num_runs = self.world_comm.recv( source=0, tag=WORKER_JOB )
+        shuffle, strain, num_runs, k = self.world_comm.recv( source=0, tag=WORKER_JOB )
+        self.k = k
         if num_runs > 0:
             run_log, gpu_sqs_msgs, data_sqs_msgs = ([],[],[])
             while num_runs > 0:
@@ -506,7 +505,6 @@ class DataNode(MPINode):
         sample_names = self._get_samples_by_strain(strain)
         alleles = self.get_alleles(strain)
         sample_allele = {}
-        self.k
         exp = self._sd.get_expression(sample_names).copy()
         sample_names = exp.columns
         sm = dict( ((sm,i) for i, sm in enumerate(exp.columns)) )
@@ -598,7 +596,6 @@ class MasterDataNode(DataNode):
         conn = boto.sqs.connect_to_region('us-east-1')
         conn.create_queue( self.data_sqs_queue )
         conn.create_queue( self.gpu_sqs_queue )
-        self.k = settings['k']
         self.working_bucket = settings['working_bucket']
         conn = boto.connect_s3()
         conn.create_bucket( self.working_bucket )
@@ -607,7 +604,6 @@ class MasterDataNode(DataNode):
         self.meta_file = settings['meta_file']
         self.network_table = settings['network_table']
         self.network_source = settings['network_source']
-        self.total_runs = settings['total_run']
         self.sample_block_size = settings['sample_block_size']
         self.pairs_block_size = settings['pairs_block_size']
         self.nets_block_size = settings['nets_block_size']
@@ -615,9 +611,6 @@ class MasterDataNode(DataNode):
         self.logger.info("Settings inititialized")
         self.world_comm.barrier()
 
-    def _handle_command( self, command ):
-        if command['message-type'] == 'init-settings':
-            self._set_settings( command )
 
     def _generate_command_queues(self):
         md = boto.utils.get_instance_metadata()
@@ -648,8 +641,6 @@ class MasterDataNode(DataNode):
         self.logger.debug("data_sqs_queue: %s" % self.data_sqs_queue )
         self.gpu_sqs_queue = self.world_comm.bcast(self.gpu_sqs_queue )
         self.logger.debug("gpu_sqs_queue: %s" % self.gpu_sqs_queue )
-        self.k = self.world_comm.bcast(self.k )
-        self.logger.debug("k: %i" % self.k)
         self.working_dir = self.world_comm.bcast(self.working_dir ) 
         self.logger.debug("working_dir: %s" % self.working_dir)
         self.working_bucket = self.world_comm.bcast(self.working_bucket)
@@ -683,14 +674,58 @@ class MasterDataNode(DataNode):
         self.logger.debug("sending net info")
         self.world_comm.bcast(sd.net_info)
 
+
     def run(self):
-        strains = self.get_strains()
-        strain = strains[0] 
+        
+        conn = boto.sqs.connect_to_region( 'us-east-1' )
+        terminate = False
+        while not terminate:
+
+            command_q = conn.get_queue( self.command_q_name )
+            command = None
+            while command is None:
+                command = command_q.read( wait_time_seconds=30)
+                if command is None:
+                    self.logger.warning("No message in command queue.")
+            msg = command.get_body()
+            command_q.delete_message( command )
+            terminate = self._handle_command( msg )
+
+        exit_count = 0
+        while exit_count < (self.world_comm.size - 1):
+            worker_ready_id = self.world_comm.recv(source=MPI.ANY_SOURCE, 
+                                                    tag=WORKER_READY )
+            self.logger.info("Terminate to worker[%i]" % worker_ready_id)
+            message = (True, None, -1, 0)
+            self.world_comm.send(dest=worker_ready_id, obj=message, tag=WORKER_JOB)
+            self.world_comm.recv(source=worker_ready_id, tag=WORKER_EXIT)
+            exit_count += 1
+        self.logger.info( "Exiting run" )
+
+
+
+    def _handle_command( self, command ):
+        self.logger.debug("Recvd command")
+        if command['message-type'] == 'init-settings':
+            self._set_settings( command )
+            return False
+        if command['message-type'] == 'run-instructions':
+            self._run( command['strain'], command['num_runs'], 
+                    command['shuffle'], command['k'])
+            return False
+        if command['message-type'] == 'termination-notice':
+            self.logger.warning("Recvd Terminate")
+            return True
+
+    def _run(self, strain, total_runs, shuffle, k):     
+        self.total_runs = total_runs
+        self.k = k
+        self.
         quit = False
         status = MPI.Status()
         partial_run_size = self.partial_run_size 
         self.logger.debug("Each run has a size of [%i]" % partial_run_size)
-        total_runs = self.total_runs
+        start_time = time.time()
         while total_runs > 0:
             self.logger.debug("Getting ready worker")
             worker_ready_id = self.world_comm.recv(source=MPI.ANY_SOURCE, 
@@ -698,19 +733,27 @@ class MasterDataNode(DataNode):
             partial_runs = min(partial_run_size, total_runs)
             self.logger.debug("Sending work to [%i] num_runs[%i]" % \
                     (worker_ready_id, partial_runs ))
-            message = (True, strain, min(partial_runs, total_runs))
+            message = (True, strain, min(partial_runs, total_runs), k)
             self.world_comm.send(dest=worker_ready_id, obj=message, tag=WORKER_JOB)
             total_runs -= partial_runs
             self.logger.debug("Runs remaining[%i]" % total_runs)
-        exit_count = 0
-        while exit_count < (self.world_comm.size - 1):
-            worker_ready_id = self.world_comm.recv(source=MPI.ANY_SOURCE, 
-                                                    tag=WORKER_READY )
-            message = (True, None, -1)
-            self.world_comm.send(dest=worker_ready_id, obj=message, tag=WORKER_JOB)
-            self.world_comm.recv(source=worker_ready_id, tag=WORKER_EXIT)
-            exit_count += 1
+        self.world_comm.Probe( source=MPI.ANY_SOURCE, tag=WORKER_READY )
+        elapsed_time = time.time() - start_time
+        self._send_run_complete( strain, self.total_runs, shuffle, k, elapsed_time )
         return False
+
+    def _send_run_complete(self, strain, num_runs, shuffle, k, elapsed_time):
+        message = {'message-type': 'run-complete'
+                    'strain': strain,
+                    'num_runs': num_runs,
+                    'shuffle': shuffle,
+                    'k': k,
+                    'elapsed_time': elapsed_time}
+        js_mess = json.dumps( message )
+        conn = boto.sqs.connect_to_region( 'us-east-1' )
+        rq = conn.get_queue( self.response_q )
+        rq.write( Message( body=js_mess ) )
+
 
     @property
     def partial_run_size(self):
