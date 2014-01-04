@@ -37,7 +37,8 @@ class NodeFactory:
         if world_comm.rank > 0:
             self.thisNode = DataNode(world_comm, log_dir, working_dir, init_q)
         else:
-            self.thisNode = MasterDataNode(world_comm, log_dir, working_dir, init_q)
+            self.thisNode = MasterDataNode(world_comm, 
+                                            log_dir, working_dir, init_q)
 
     def getNode(self):
         return self.thisNode
@@ -562,7 +563,9 @@ class MasterDataNode(DataNode):
                     'instance-id': md['instance-id'],
                     'command': self.command_q_name,
                     'response': self.response_q_name,
-                    'zone': self._availabilityzone}
+                    'zone': self._availabilityzone,
+                    'num-nodes': self.world_comm.size
+                    }
         m = Message( body=json.dumps( init_msg ) )
         conn = boto.sqs.connect_to_region( 'us-east-1' )
         init_q = None
@@ -574,7 +577,6 @@ class MasterDataNode(DataNode):
             self.logger.error("Unable to connect to init q")
             raise Exception("Unable to connect to init q")
         init_q.write( m )
-
         command_q = conn.get_queue( self.command_q_name )
         command = None
         while command is None:
@@ -586,9 +588,6 @@ class MasterDataNode(DataNode):
         self.logger.info("Init Message %s" % init_msg)
         parsed = json.loads(init_msg)
         self._handle_command( parsed )
-
-
-        
 
     def _set_settings( self, settings ):
         self.data_sqs_queue = settings['data_sqs_queue']
