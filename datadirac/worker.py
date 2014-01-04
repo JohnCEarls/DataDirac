@@ -719,7 +719,6 @@ class MasterDataNode(DataNode):
     def _run(self, strain, total_runs, shuffle, k):     
         self.total_runs = total_runs
         self.k = k
-        self.
         quit = False
         status = MPI.Status()
         partial_run_size = self.partial_run_size 
@@ -736,13 +735,14 @@ class MasterDataNode(DataNode):
             self.world_comm.send(dest=worker_ready_id, obj=message, tag=WORKER_JOB)
             total_runs -= partial_runs
             self.logger.debug("Runs remaining[%i]" % total_runs)
+        self.logger.info("Waiting for a worker to finish")
         self.world_comm.Probe( source=MPI.ANY_SOURCE, tag=WORKER_READY )
         elapsed_time = time.time() - start_time
         self._send_run_complete( strain, self.total_runs, shuffle, k, elapsed_time )
         return False
 
     def _send_run_complete(self, strain, num_runs, shuffle, k, elapsed_time):
-        message = {'message-type': 'run-complete'
+        message = {'message-type': 'run-complete',
                     'strain': strain,
                     'num_runs': num_runs,
                     'shuffle': shuffle,

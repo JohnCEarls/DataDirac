@@ -34,7 +34,7 @@ def main():
         parser.add_argument('-c', '--config', help='Configfile name', required=True)
         args = parser.parse_args()
         defaults = {'boto_level':'ERROR',
-                    'std_out_level':None}
+                    'std_out_level':None,
                     'level':'ERROR'}
         config = ConfigParser.ConfigParser(defaults=defaults )
         config.read(args.config)
