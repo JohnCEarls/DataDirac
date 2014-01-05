@@ -2,6 +2,7 @@ import logging
 from mpi4py import MPI
 from utils import debug
 import worker
+import sys
 
 def push_log():
     import time
@@ -31,6 +32,9 @@ def push_log():
 
 def init_logging( logging_file, level, boto_level, std_out_level):
     debug.initMPILogger( logging_file, level=level, boto_level=boto_level)
+    #set root logger to the lowest level
+    lowest = min([l for l in  [level, boto_level, std_out_level] if l])
+    logging.getLogger().setLevel(lowest)
     if std_out_level:
         root = logging.getLogger()
         ch = logging.StreamHandler(sys.stdout)
@@ -47,6 +51,18 @@ def run(data_log_dir, working_dir,  init_q ):
     while thisNode.run():
         thisNode.logger.info("Completed one run")
     world_comm.Barrier()
+
+   
+LEVELS = {'DEBUG': logging.DEBUG,
+          'INFO': logging.INFO,
+          'WARNING': logging.WARNING,
+          'ERROR': logging.ERROR,
+          'CRITICAL': logging.CRITICAL,
+          'debug': logging.DEBUG,
+          'info': logging.INFO,
+          'warning': logging.WARNING,
+          'error': logging.ERROR,
+          'critical': logging.CRITICAL}
 
 def main():
     comm = MPI.COMM_WORLD
@@ -80,7 +96,13 @@ def main():
         std_out_level = comm.bcast()
         level = comm.bcast()
         logging_file = comm.bcast()
-        
+    level = LEVELS[level] if level else None
+    std_out_level = LEVELS[std_out_level] if std_out_level else None
+    boto_level = LEVELS[boto_level] if boto_level else None 
+
+    print level
+    print std_out_level
+    print boto_level
     init_logging( logging_file, level, boto_level, std_out_level )
     logger = logging.getLogger(name)
     logger.info( "Logging initialized" )
@@ -88,7 +110,7 @@ def main():
     if comm.rank == 0:
         data_log_dir = config.get('cluster_init', 'data_log_dir')
         working_dir =  config.get('cluster_init', 'working_dir')
-        init_q = config.get('cluster_init', 'init_q')
+        init_q = config.get('cluster_init', 'init_queue')
     else:
         data_log_dir, working_dir,  init_q = (None, None, None)
     run( data_log_dir, working_dir, init_q )

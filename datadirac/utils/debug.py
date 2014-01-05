@@ -6,6 +6,7 @@ import logging.handlers
 import random
 import static
 from mpi4py import MPI
+import getpass
 
 class MPILogFile(MPI.File):
     def write(self, buff, status=None):
@@ -31,6 +32,7 @@ class MPIFileHandler(logging.FileHandler):
         self.mode = mode
         self.encoding = encoding
         self.comm = comm
+        print getpass.getuser()
         if delay:
             #We don't open the stream, but we still need to call the
             #Handler constructor to set level, formatter, lock etc.
@@ -40,7 +42,10 @@ class MPIFileHandler(logging.FileHandler):
            logging.StreamHandler.__init__(self, self._open())
 
     def _open(self):
-        stream = MPILogFile.Open( self.comm, self.baseFilename, self.mode )
+        #stream = MPILogFile.Open( self.comm, self.baseFilename, self.mode )
+        print self.comm, self.baseFilename,(MPI.MODE_WRONLY + MPI.MODE_CREATE + MPI.MODE_APPEND)
+        stream = MPILogFile.Open( self.comm, self.baseFilename, 
+                amode = (MPI.MODE_WRONLY + MPI.MODE_CREATE + MPI.MODE_APPEND))
         stream.Set_atomicity(True)
         return stream
 
@@ -58,6 +63,17 @@ def initMPILogger( log_file, level=logging.WARNING,
       NOTE: Path is automagically created by this method
     level = logging level
     """
+    LEVELS = {'DEBUG': logging.DEBUG,
+          'INFO': logging.INFO,
+          'WARNING': logging.WARNING,
+          'ERROR': logging.ERROR,
+          'CRITICAL': logging.CRITICAL,
+          'debug': logging.DEBUG,
+          'info': logging.INFO,
+          'warning': logging.WARNING,
+          'error': logging.ERROR,
+          'critical': logging.CRITICAL}
+
     full_path = os.path.abspath( log_file )
     tries = 0
     path, f_name = os.path.split(full_path)
@@ -72,7 +88,8 @@ def initMPILogger( log_file, level=logging.WARNING,
             if tries > 10:
                 raise
     logger = logging.getLogger("")
-    mh = MPIFileHandler(full_path)
+    #mh = MPIFileHandler(full_path)
+    mh = logging.FileHandler( os.path.join(path , 'datadirac_%i.log' % MPI.COMM_WORLD.rank) )
     formatter = logging.Formatter(('%(asctime)s - %(name)s - %(levelname)s' 
                                     ' - %(message)s'))
     mh.setFormatter(formatter)

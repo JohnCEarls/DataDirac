@@ -42,7 +42,7 @@ class NodeFactory:
         if world_comm.rank > 0:
             self.thisNode = DataNode(world_comm, log_dir, working_dir, init_q)
         else:
-            self.thisNode = MasterDataNode(world_comm, 
+            self.thisNode = MasterDataNode(world_comm,
                                             log_dir, working_dir, init_q)
 
     def getNode(self):
@@ -548,8 +548,11 @@ class MasterDataNode(DataNode):
     Takes a communicator object.
     """
     def __init__(self, world_comm, log_dir, working_dir, init_q):
-        DataNode.__init__(self, world_comm )
+        DataNode.__init__(self, world_comm, log_dir,
+                working_dir, init_q)
         self.name = "MasterDataNode"
+        self.logger = logging.getLogger(self.name)
+        self.logger.debug("Initializing")
         self.log_dir = log_dir
         self.working_dir = working_dir
         self.init_q_name = init_q
@@ -558,7 +561,7 @@ class MasterDataNode(DataNode):
         """
         Retrieves settings from master server
         """
-        self.logger("Generating command queues")
+        self.logger.debug("Generating command queues")
         self._generate_command_queues()
         md = boto.utils.get_instance_metadata()
         self._availabilityzone = md['placement']['availability-zone']
@@ -573,19 +576,23 @@ class MasterDataNode(DataNode):
                     }
         m = Message( body=json.dumps( init_msg ) )
         conn = boto.sqs.connect_to_region( 'us-east-1' )
+
         init_q = None
+        ctr = 0
         while init_q is None and ctr < 6:
             init_q = conn.get_queue( self.init_q_name  )
+            self.logger.debug("Init Q: %r" % init_q)
+            self.logger.debug("Init msg: %s" % json.dumps( init_msg ) )
             time.sleep(1+ctr**2)
             ctr += 1
         if init_q is None:
             self.logger.error("Unable to connect to init q")
             raise Exception("Unable to connect to init q")
         init_q.write( m )
-        command_q = conn.get_queue( self.command_q_name )
+        command_q = conn.create_queue( self.command_q_name )
         command = None
         while command is None:
-            command = command_q.read( wait_time_seconds=30)
+            command = command_q.read( wait_time_seconds=20)
             if command is None:
                 self.logger.warning("No message in command queue.")
         init_msg = command.get_body()
