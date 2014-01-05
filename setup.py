@@ -30,7 +30,8 @@ if sys.version_info < (2, 7):
     sys.exit(1)
 
 from setuptools import setup, find_packages
-console_scripts = [ 'datadirac = datadirac.server:main' ]
+console_scripts = [ 'datadirac = datadirac.server:main',
+        'datadirac-push-log = datadirac.server:push_log' ]
 extra = dict(install_requires=["boto>=2.9.9","mpi4py>=1.2.2" ],
             entry_points=dict(console_scripts=console_scripts), 
              zip_safe=False)

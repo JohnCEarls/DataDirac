@@ -1,12 +1,9 @@
-import static
-import debug
 import scipy.misc
 from pandas import DataFrame
 import itertools
 import numpy as np
 import os
 import os.path as op
-import logging
 
 def getSRT( df ):
     """
@@ -41,10 +38,6 @@ def getRT( df ):
     
     """
     nsamps = df.shape[1]
-
-    if debug.DEBUG:
-        assert(nsamps == len(df.columns))
-    
     return df.sum(1).apply(lambda x: 0 if 2*x < nsamps else 1)   
 
 def getRMS( srts, rt):

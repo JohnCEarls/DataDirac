@@ -1,29 +1,34 @@
-import hashlib
-import scipy.misc
-from mpi4py import MPI
+#from datadirac
+from utils import debug
 import data
 import gpudata
 import dirac
+#sys funcs
+import time
+import random
 import logging
 import socket
-import os.path as op
+import sys
 import os
-import boto
-import boto.sqs
+import os.path as op
+import hashlib
+import copy
 import json
 import bisect
 import itertools
+#scipy stack
 import pandas
 import numpy as np
-import time
-import random
-from boto.s3.key import Key
+import scipy.misc
+#aws
 import boto
-import copy
+import boto.sqs
+from boto.s3.key import Key
 from boto.exception import S3ResponseError
 from boto.sqs.message import Message
-import debug
-import sys
+#mpi
+from mpi4py import MPI
+
 #tags
 WORKER_READY = 123
 WORKER_EXIT = 321

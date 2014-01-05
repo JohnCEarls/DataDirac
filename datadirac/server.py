@@ -3,6 +3,32 @@ from mpi4py import MPI
 from utils import debug
 import worker
 
+def push_log():
+    import time
+    import argparse
+    import ConfigParser
+    import os, os.path
+    import boto.utils
+    import boto
+    from boto.s3.key import Key
+    #only master reads config
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-c', '--config', help='Configfile name', required=True)
+    args = parser.parse_args()
+    config = ConfigParser.RawConfigParser()
+    config.read(args.config)
+    log_file = config.get('logging', 'logging_file')
+    inst_id = boto.utils.get_instance_metadata()['instance-id']
+    ctime = time.strftime('%Y-%m-%d-%T', time.gmtime())
+    lf_name = config.get('logging', 'log_s3_name_format') % (inst_id,ctime)
+    conn = boto.connect_s3()
+    bkt = conn.create_bucket(config.get('logging', 'log_bucket') )
+    k = Key(bkt)
+    k.key = lf_name
+    k.set_metadata('project', 'HD')
+    k.storage_class = 'REDUCED_REDUNDANCY'
+    k.set_contents_from_filename( log_file )
+
 def init_logging( logging_file, level, boto_level, std_out_level):
     debug.initMPILogger( logging_file, level=level, boto_level=boto_level)
     if std_out_level:
