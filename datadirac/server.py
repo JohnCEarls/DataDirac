@@ -53,7 +53,6 @@ def run(data_log_dir, working_dir,  init_q ):
     MPI.COMM_WORLD.Barrier()
     thisNode.logger.info("Exiting run")
 
-   
 LEVELS = {'DEBUG': logging.DEBUG,
           'INFO': logging.INFO,
           'WARNING': logging.WARNING,

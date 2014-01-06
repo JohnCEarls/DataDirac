@@ -16,6 +16,7 @@ import copy
 import json
 import bisect
 import itertools
+import base64
 #scipy stack
 import pandas
 import numpy as np
@@ -321,7 +322,7 @@ class DataNode(MPINode):
             if len(msg_batch) == max_msgs:
                 my_queue.write_batch( msg_batch )
                 msg_batch = []
-            msg_batch.append( (i,msg ,0) )
+            msg_batch.append( (i,base64.b64encode(msg) ,0) )
         if len(msg_batch):
             my_queue.write_batch( msg_batch )
 
