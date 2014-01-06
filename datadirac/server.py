@@ -50,7 +50,8 @@ def run(data_log_dir, working_dir,  init_q ):
     thisNode.get_data()
     while thisNode.run():
         thisNode.logger.info("Completed one run")
-    world_comm.Barrier()
+    MPI.COMM_WORLD.Barrier()
+    thisNode.logger.info("Exiting run")
 
    
 LEVELS = {'DEBUG': logging.DEBUG,
@@ -100,9 +101,6 @@ def main():
     std_out_level = LEVELS[std_out_level] if std_out_level else None
     boto_level = LEVELS[boto_level] if boto_level else None 
 
-    print level
-    print std_out_level
-    print boto_level
     init_logging( logging_file, level, boto_level, std_out_level )
     logger = logging.getLogger(name)
     logger.info( "Logging initialized" )

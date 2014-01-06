@@ -36,14 +36,14 @@ WORKER_JOB = 333
 #original source for this is in tcDirac/tcdirac/workers
 #on the subcluster branch
 class NodeFactory:
-    def __init__(self, world_comm, log_dir, working_dir, init_q):
+    def __init__(self, world_comm, data_log_dir, working_dir, init_q):
         self.logger = logging.getLogger('NodeFactory_[%i]' % world_comm.rank)
         self.logger.info("NodeFactory init")
         if world_comm.rank > 0:
-            self.thisNode = DataNode(world_comm, log_dir, working_dir, init_q)
+            self.thisNode = DataNode(world_comm, data_log_dir, working_dir, init_q)
         else:
             self.thisNode = MasterDataNode(world_comm,
-                                            log_dir, working_dir, init_q)
+                                            data_log_dir, working_dir, init_q)
 
     def getNode(self):
         return self.thisNode
@@ -133,7 +133,6 @@ class MPINode:
                         e_ctr += 1
                         raise
 
-
     def get_data(self):
         self._master_init()
         self._cluster_init()
@@ -182,7 +181,7 @@ class MPINode:
                 time.sleep(random.random())
 
 class DataNode(MPINode):
-    def __init__(self, world_comm, log_dir, working_dir, init_q):
+    def __init__(self, world_comm, data_log_dir, working_dir, init_q):
         MPINode.__init__(self, world_comm )
         self.name = 'DataNode_%i' % world_comm.rank
         self.logger = logging.getLogger(self.name)
@@ -195,7 +194,7 @@ class DataNode(MPINode):
         self._pathways = None
         self.to_gpu_sqs = None
         self.to_data_sqs = None
-        self.log_dir = log_dir
+        self.data_log_dir = data_log_dir
         self.working_dir = working_dir
         self.init_q = init_q
 
@@ -234,12 +233,12 @@ class DataNode(MPINode):
                            self.sample_block_size, 
                            self.pairs_block_size, 
                            self.nets_block_size))
-        self.gpu_mem_max = self.world_comm.bcast( self.gpu_mem_max ) 
+        self.gpu_mem_max = self.world_comm.bcast( ) 
         self.logger.info("Cluster init complete")
 
     def  _handle_net_info( self, sd ):
         self.logger.debug("recving net info")
-        sd.set_net_info(world_comm.bcast(None, root=0))
+        sd.set_net_info(self.world_comm.bcast(None, root=0))
 
     def run(self):
         """
@@ -547,13 +546,13 @@ class MasterDataNode(DataNode):
     The mpi master for a cluster of data generation nodes.
     Takes a communicator object.
     """
-    def __init__(self, world_comm, log_dir, working_dir, init_q):
-        DataNode.__init__(self, world_comm, log_dir,
+    def __init__(self, world_comm, data_log_dir, working_dir, init_q):
+        DataNode.__init__(self, world_comm, data_log_dir,
                 working_dir, init_q)
         self.name = "MasterDataNode"
         self.logger = logging.getLogger(self.name)
         self.logger.debug("Initializing")
-        self.log_dir = log_dir
+        self.data_log_dir = data_log_dir
         self.working_dir = working_dir
         self.init_q_name = init_q
 
@@ -695,12 +694,13 @@ class MasterDataNode(DataNode):
             command_q = conn.get_queue( self.command_q_name )
             command = None
             while command is None:
-                command = command_q.read( wait_time_seconds=30)
+                command = command_q.read( wait_time_seconds=20)
                 if command is None:
                     self.logger.warning("No message in command queue.")
-            msg = command.get_body()
+            msg = json.loads(command.get_body())
             command_q.delete_message( command )
             terminate = self._handle_command( msg )
+            self.logger.debug("Finished command %s" % msg['message-type'])
 
         exit_count = 0
         while exit_count < (self.world_comm.size - 1):
@@ -713,15 +713,14 @@ class MasterDataNode(DataNode):
             exit_count += 1
         self.logger.info( "Exiting run" )
 
-
-
     def _handle_command( self, command ):
-        self.logger.debug("Recvd command")
+        self.logger.debug("Recvd command: %s " %\
+            json.dumps(command) )
         if command['message-type'] == 'init-settings':
             self._set_settings( command )
             return False
         if command['message-type'] == 'run-instructions':
-            self._run( command['strain'], command['num_runs'], 
+            self._run( command['strain'], command['num-runs'], 
                     command['shuffle'], command['k'])
             return False
         if command['message-type'] == 'termination-notice':
@@ -756,15 +755,16 @@ class MasterDataNode(DataNode):
     def _send_run_complete(self, strain, num_runs, shuffle, k, elapsed_time):
         message = {'message-type': 'run-complete',
                     'strain': strain,
-                    'num_runs': num_runs,
+                    'num-runs': num_runs,
                     'shuffle': shuffle,
                     'k': k,
                     'elapsed_time': elapsed_time}
         js_mess = json.dumps( message )
+        self.logger.debug("Sending run complete message")
         conn = boto.sqs.connect_to_region( 'us-east-1' )
-        rq = conn.get_queue( self.response_q )
+        rq = conn.get_queue( self.response_q_name )
+        self.logger.debug( "Sending %s:" % js_mess)
         rq.write( Message( body=js_mess ) )
-
 
     @property
     def partial_run_size(self):
