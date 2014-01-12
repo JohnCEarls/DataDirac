@@ -101,6 +101,12 @@ class DataSQSMessage(SQSMessage):
         self._msg['result_files'][allele] = \
                                     self._result_file_name( allele_file_id )
 
+    def add_sample_names( self, sample_names ):
+        self._msg['sample_names'] = sample_names
+
+    def add_sample_allele( self, sample_allele ):
+        self._msg['sample_allele'] = sample_allele
+
     def _result_file_name( self, allele_file_id):
         #see gpudirac.subprocesses.packer:138
         return "%s_rms" % allele_file_id
@@ -263,12 +269,14 @@ class DataNode(MPINode):
                 desc = DataDescription( data_pkg, 
                         file_id, strain, shuffle)
                 dsm = DataSQSMessage( file_id, strain, shuffle)
-                _, alleles, _ = data_pkg
+                sample_names, alleles, sample_allele = data_pkg
                 for i,allele in enumerate(alleles):
                     a_gpu_pkg = self._buffer_data( gpu_pkg, i )
                     allele_fid = self._allele_file_id( file_id, allele)
                     gsm = GPUSQSMessage( allele_fid )
                     dsm.add_result( allele, allele_fid)
+                    dsm.add_sample_names( samples_names )
+                    dsm.add_sample_allele( sample_allele )
                     f_types, f_paths = self._save_data( a_gpu_pkg, allele_fid )
                     self._transmit_data( allele_fid, f_types, f_paths )
                     desc.add_matrices( allele_fid, f_types, f_paths)
