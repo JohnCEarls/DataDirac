@@ -96,13 +96,15 @@ class DataSQSMessage(SQSMessage):
         self._msg['strain'] = strain
         self._msg['shuffle'] = shuffle
         self._msg['result_files'] = {}
+        self._msg['sample_names'] = {}
+        self._msg['sample_allele'] = {} 
 
     def add_result(self, allele, allele_file_id):
         self._msg['result_files'][allele] = \
                                     self._result_file_name( allele_file_id )
 
     def add_sample_names( self, sample_names ):
-        self._msg['sample_names'] = sample_names
+        self._msg['sample_names'] = sample_names.tolist()
 
     def add_sample_allele( self, sample_allele ):
         self._msg['sample_allele'] = sample_allele
@@ -275,7 +277,7 @@ class DataNode(MPINode):
                     allele_fid = self._allele_file_id( file_id, allele)
                     gsm = GPUSQSMessage( allele_fid )
                     dsm.add_result( allele, allele_fid)
-                    dsm.add_sample_names( samples_names )
+                    dsm.add_sample_names( sample_names )
                     dsm.add_sample_allele( sample_allele )
                     f_types, f_paths = self._save_data( a_gpu_pkg, allele_fid )
                     self._transmit_data( allele_fid, f_types, f_paths )
