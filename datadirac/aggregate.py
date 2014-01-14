@@ -13,7 +13,7 @@ class ResultSet(object):
         self.result_files = instructions['result_files']
         self.sample_allele = instructions['sample_allele']
         self.sample_names = instructions['sample_names']
-        self.shuffle = intstructions['shuffle']
+        self.shuffle = instructions['shuffle']
         self.strain = instructions['strain']
         #HACK, add networks to instructions
         self.networks = [str(i) for i in range(217)]
@@ -80,20 +80,21 @@ class ResultSet(object):
                                         for sname in self.sample_names] )
         return self._truth
 
-    def accuracy(self,by_network=True  mask=None):
+    def accuracy(self,by_network=True,  mask=None):
         if mask is None:
             mask = np.array(range(self.nsamp))
         truth_mat = np.tile(self.truth, (self.nnets, 1))
-        compare_mat = (truth == classified)
+        compare_mat = (truth_mat == self.classified)
         if by_network:
-            accuracy = compare[:,mask].sum(axis=1)/float(self.len(mask))
+            accuracy = compare_mat[:,mask].sum(axis=1)/float(len(mask))
         else:
-            accuracy = compare[:,mask].sum()/float(len(mask) * self.nnets)
+            accuracy = compare_mat[:,mask].sum()/float(len(mask) * self.nnets)
         return accuracy
 
 
 class Aggregator:
     def __init__(self, sqs_data_to_agg, s3_from_gpu, num_nets=217):
+        #TODO: send network info with data
         self.sqs_data_to_agg = sqs_data_to_agg
         self.s3_from_gpu = s3_from_gpu
         self._data_queue = None
@@ -114,3 +115,7 @@ class Aggregator:
         self.data_queue.delete_message(m[0])
         return ResultSet(inst, self.s3_from_gpu)
 
+if __name__ == "__main__":
+    a = Aggregator('from-data-to-agg', 'ndp-from-gpu-to-agg', num_nets=217)
+    rs =a.get_result_set()
+    print rs.accuracy()
