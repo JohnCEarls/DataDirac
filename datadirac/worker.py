@@ -16,6 +16,7 @@ import copy
 import json
 import bisect
 import itertools
+import string
 import base64
 #scipy stack
 import pandas
@@ -90,14 +91,16 @@ class GPUSQSMessage(SQSMessage):
             self._msg['f_names'][ft] = f_tail
 
 class DataSQSMessage(SQSMessage):
-    def __init__(self, file_id, strain, shuffle ):
+    def __init__(self,run_id, file_id, strain, shuffle, num_nets ):
         self._msg = {}
+        self._msg['run_id'] = run_id
         self._msg['file_id'] = file_id
         self._msg['strain'] = strain
         self._msg['shuffle'] = shuffle
         self._msg['result_files'] = {}
         self._msg['sample_names'] = {}
         self._msg['sample_allele'] = {} 
+        self._msg['num_networks'] = num_nets
 
     def add_result(self, allele, allele_file_id):
         self._msg['result_files'][allele] = \
@@ -181,8 +184,8 @@ class MPINode:
                 b = conn.get_bucket(self.ds_bucket)
                 k = Key(b)
                 k.key = self.data_file
-                k.get_contents_to_filename(
-                        op.join( self.working_dir, self.data_file))
+                k.get_contents_to_filename( op.join( self.working_dir,
+                                                            self.data_file) )
             except S3ResponseError:
                 print "Have you run ~/hdproject/utilities/hddata_process.py lately"
                 raise
@@ -261,16 +264,18 @@ class DataNode(MPINode):
             It keeps a detailed log of what it has generated to a local file.
         """
         self.world_comm.send( self.world_comm.rank, tag=WORKER_READY)
-        shuffle, strain, num_runs, k = self.world_comm.recv( source=0, tag=WORKER_JOB )
+        run_id, shuffle, strain, num_runs, k = self.world_comm.recv( 
+                                            source=0, tag=WORKER_JOB )
         self.k = k
         if num_runs > 0:
             run_log, gpu_sqs_msgs, data_sqs_msgs = ([],[],[])
+            num_nets = len(self._pathways)
             while num_runs > 0:
                 data_pkg, gpu_pkg = self._package_data(strain, shuffle)
                 file_id = self._create_file_id()
                 desc = DataDescription( data_pkg, 
                         file_id, strain, shuffle)
-                dsm = DataSQSMessage( file_id, strain, shuffle)
+                dsm = DataSQSMessage( run_id, file_id, strain, shuffle, num_nets)
                 sample_names, alleles, sample_allele = data_pkg
                 for i,allele in enumerate(alleles):
                     a_gpu_pkg = self._buffer_data( gpu_pkg, i )
@@ -300,7 +305,8 @@ class DataNode(MPINode):
         Generates a file id, this marks the dirac package, 
             i.e. all of the matrices for comparison share this id
         """
-        return '%08d' % random.randint(0, 99999999)
+        return ''.join(random.choice(string.ascii_lowercase) 
+                for x in range(7))
 
     def _allele_file_id(self, file_id, allele):
         """
@@ -718,7 +724,7 @@ class MasterDataNode(DataNode):
             worker_ready_id = self.world_comm.recv(source=MPI.ANY_SOURCE, 
                                                     tag=WORKER_READY )
             self.logger.info("Terminate to worker[%i]" % worker_ready_id)
-            message = (True, None, -1, 0)
+            message = (None, True, None, -1, 0)
             self.world_comm.send(dest=worker_ready_id, obj=message, tag=WORKER_JOB)
             self.world_comm.recv(source=worker_ready_id, tag=WORKER_EXIT)
             exit_count += 1
@@ -731,14 +737,14 @@ class MasterDataNode(DataNode):
             self._set_settings( command )
             return False
         if command['message-type'] == 'run-instructions':
-            self._run( command['strain'], command['num-runs'], 
+            self._run(command['run-id'], command['strain'], command['num-runs'], 
                     command['shuffle'], command['k'])
             return False
         if command['message-type'] == 'termination-notice':
             self.logger.warning("Recvd Terminate")
             return True
 
-    def _run(self, strain, total_runs, shuffle, k):     
+    def _run(self,run_id, strain, total_runs, shuffle, k):     
         self.total_runs = total_runs
         self.k = k
         quit = False
@@ -753,7 +759,7 @@ class MasterDataNode(DataNode):
             partial_runs = min(partial_run_size, total_runs)
             self.logger.debug("Sending work to [%i] num_runs[%i]" % \
                     (worker_ready_id, partial_runs ))
-            message = (True, strain, min(partial_runs, total_runs), k)
+            message = (run_id, shuffle, strain, partial_runs, k)
             self.world_comm.send(dest=worker_ready_id, obj=message, tag=WORKER_JOB)
             total_runs -= partial_runs
             self.logger.debug("Runs remaining[%i]" % total_runs)
