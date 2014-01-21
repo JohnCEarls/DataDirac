@@ -14,12 +14,20 @@ import base64
 import datetime
 from boto.dynamodb2.exceptions import ConditionalCheckFailedException
 import os.path
+from datadirac.data import NetworkInfo
+import pandas
 
 class TruthException(Exception):
     pass
 
+class FileCorruption(Exception):
+    pass
+
+class DirtyRunException(Exception):
+    pass
+
 class ResultSet(object):
-    def __init__(self, instructions, s3_from_gpu, by_network, mask_id):
+    def __init__(self, instructions, s3_from_gpu, by_network, mask_id ):
         self.s3_from_gpu= s3_from_gpu
         self._result_bucket = None
         self._alleles = None
@@ -37,6 +45,8 @@ class ResultSet(object):
         self._data = None
         self._classified = None
         self._truth = None
+        self._pathways = None
+        self._mask = None
 
     @property
     def nsamp(self):
@@ -66,11 +76,24 @@ class ResultSet(object):
         return self._alleles
 
     def _get_data(self, allele):
-        with tempfile.SpooledTemporaryFile() as temp:
-            key = self.result_bucket.get_key( self.result_files[allele] )
-            key.get_contents_to_file( temp )
-            temp.seek(0)
-            buffered_matrix = np.load( temp )
+        complete = False
+        count = 0
+        while not complete:
+            try:
+                with tempfile.SpooledTemporaryFile() as temp:
+                    key = self.result_bucket.get_key( self.result_files[allele] )
+                    key.get_contents_to_file( temp )
+                    temp.seek(0)
+                    buffered_matrix = np.load( temp )
+                complete = True
+            except Exception as e:
+                 print e
+                 print "error on get[%r], trying again" % self.result_files[allele] 
+                 count += 1
+                 time.sleep(.5)
+                 if count >10:
+                     raise FileCorruption
+                 pass
         return buffered_matrix[:self.nnets, :self.nsamp]
 
     @property
@@ -113,10 +136,21 @@ class ResultSet(object):
 
     def get_mask(self):
         mask_id = self.mask_id
-        if mask_id == 'all':
-            mask = np.array(range(self.nsamp))
-        return mask
+        if self._mask is None:
+            if mask_id == 'all':
+                self._mask = np.array(range(self.nsamp))
+            elif mask_id == 'lt12':
+                self._mask = self._select_range( 0.0, 12.0)
+        return self._mask
 
+    def _select_range(self, start, end):
+        samp = set([])
+        for _, sl in self.sample_allele.iteritems():
+            samp |= set([ sample_name for age, sample_name in sl if start <= age < end ])
+        return np.array([i for i,s in enumerate(self.sample_names) if s in samp])
+
+    def set_mask(self, mask):
+        self._mask = mask
 
     @property
     def spec_string( self):
@@ -157,6 +191,11 @@ class Aggregator:
         self.mask_id = mask_id
         self.prev_msg = None
         self.truth = {} 
+        self._run_id = None
+        self._run_config = None
+        self._net_info = None
+        self._pathways = None
+        self._mask = None
 
     @property
     def recycling_queue( self ):
@@ -184,6 +223,12 @@ class Aggregator:
             return None
 
     def handle_result_set(self, rs):
+        if self._run_id is None:
+            self._run_id =  rs.get_run_id()
+        if self._run_id != rs.get_run_id():
+            print "Inconsistent run_ids, agg[%s], res[%s]", (self._run_id, rs.get_run_id())
+            raise DirtyRunException("Inconsistent run_ids, agg[%s], res[%s]", 
+                    (self._run_id, rs.get_run_id()))
         if rs.shuffle:
             try:
                 self._handle_permutation( rs )
@@ -191,8 +236,10 @@ class Aggregator:
                 print "No truth for this"
                 print rs.get_run_id()
                 print rs.spec_string
+            except FileCorruption as fc:
+                print "Corrupt file"
         else:
-            self._handle_truth( rs )
+            print "Found Truth"
         self.data_queue.delete_message(self.prev_msg)
 
     def get_truth(self, rs):
@@ -224,6 +271,9 @@ class Aggregator:
         return accuracy
 
     def _handle_permutation(self, rs):
+        if self._mask is None:
+            self._mask = rs.get_mask()
+        rs.set_mask(self._mask)
         accuracy = rs.accuracy()
         if rs.spec_string not in self.acc_acc:
             self.acc_acc[rs.spec_string] = np.zeros_like(accuracy, dtype=int)
@@ -232,6 +282,9 @@ class Aggregator:
         self.acc_count[rs.spec_string] += 1
 
     def _handle_truth( self, rs ):
+        if self._mask is None:
+            self._mask = rs.get_mask()
+        rs.set_mask(self._mask)
         accuracy = rs.accuracy()
         with tempfile.SpooledTemporaryFile() as temp:
             np.save(temp, accuracy)
@@ -271,27 +324,129 @@ class Aggregator:
             my_path = os.path.join(path, '-'.join([prefix, k]) + '.npy')
             np.save(my_path, mat)
 
+    @property
+    def networks(self):
+        if self._pathways is None:
+            print self.net_info
+            ni = NetworkInfo( *self.net_info )
+            self._pathways = ni.get_pathways()
+        return self._pathways
+
+    def _get_config(self):
+        net_table = Table('run_gpudirac_hd')
+        r_spec = net_table.query(run_id__eq=self._run_id)
+        config = None
+        last_time = datetime.datetime(1975,2,18,0,0,0)
+        for s in r_spec:
+            time_stamp = s['timestamp']
+            curr = datetime.datetime.strptime(time_stamp, '%Y.%m.%d-%H:%M:%S') 
+            if curr > last_time:
+                config =  json.loads(base64.b64decode(s['config']))
+        return config
+
+    @property
+    def net_info(self):
+        if self._net_info is None: 
+            self._net_info = ( self.run_config['network_config']['network_table'], 
+                self.run_config['network_config']['network_source'])
+        return self._net_info
+
+    @property
+    def run_config(self):
+        if self._run_config is None:
+            self._run_config = self._get_config()
+        return self._run_config
+
+    @property
+    def run_id(self):
+        return self._run_id
+
+    def generate_csv(self, result, column_names, index,  filename):
+        df = pandas.DataFrame(result, columns = column_names, index=index)
+        df.to_csv( filename )
+
+    def write_csv(self, bucket, file_path):
+        conn = boto.connect_s3()
+        csv_bucket = conn.create_bucket(bucket)
+        _, fname = os.path.split(file_path)
+        k = Key(csv_bucket)
+        k.key = fname
+        k.set_contents_from_filename( file_path )
+        print "%s written to s3://%s/%s" % (file_path, csv_bucket, fname)
+
+    def get_mask_labels(self):
+        if self.mask_id == 'all':
+            return ['All times']
+        elif self.mask_id == 'half':
+            return ['first half', 'second half']
+
+
+class Truthiness(Aggregator):
+    def handle_result_set(self, rs):
+        if not rs.shuffle:
+            self._handle_truth( rs )
+            self.data_queue.delete_message(self.prev_msg)
+            return True
+        else:
+            return False
+
 def recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
+    print "reduce, recycle, reuse"
     conn = boto.connect_sqs()
     rec = conn.get_queue( sqs_recycling_to_agg)
     d2a = conn.get_queue(sqs_data_to_agg)
+    max_count = 500000
+    start = rec.count()
     while rec.count() > 0:
         m = rec.read(60)
         if m:
             d2a.write(m)
             rec.delete_message(m)
-        print "reduce, recycle, reuse"
-
+        max_count -= 1
+        if max_count < 0:
+            return
+        if rec.count() < start - 100:
+            print "%i messages enqueued." % rec.count()
+            start=rec.count()
 
 if __name__ == "__main__":
-    sqs_data_to_agg = 'from-data-to-agg' 
-    sqs_recycling_to_agg = 'recycling'
+    from  mpi4py import MPI
+    sqs_data_to_agg = 'from-data-to-agg-go' 
+    sqs_truth_to_agg = 'from-data-to-agg-truth'
+    sqs_recycling_to_agg = 'recycling-go'
     s3_from_gpu = 'ndp-from-gpu-to-agg'
     s3_results = 'ndp-gpudirac-results'
     run_truth_table = 'truth_gpudirac_hd'
+    s3_csvs = 'ndp-hdproject-csvs'
     by_network = True
-    mask_id = 'all'
-    if True:
+    mask_id = 'lt12'
+
+    comm = MPI.COMM_WORLD
+    truth_only = False 
+    rec = None
+    if comm.rank == 0:
+        sqs = boto.connect_sqs()
+        d2a = sqs.create_queue( sqs_data_to_agg )
+        print "Num data %i" % d2a.count()
+        if d2a.count() > 0:
+            rec = False 
+        else:
+            rec = True
+    rec = comm.bcast(rec)
+    if truth_only:
+        print "I want the truth!!!"
+        a = Truthiness( sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
+                s3_results, run_truth_table, by_network, mask_id)
+        rs =a.get_result_set()
+        ctr = 0
+        while not a.handle_result_set(rs):
+            print "not the truth", ctr
+    pira       rs =a.get_result_set()
+            if rs is None:
+                break 
+            ctr += 1
+    elif not rec:
+        print "Aggregating"
         a = Aggregator( sqs_data_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
                 s3_results, run_truth_table, by_network, mask_id)
         rs =a.get_result_set()
@@ -300,12 +455,40 @@ if __name__ == "__main__":
             ctr += 1
             a.handle_result_set(rs) 
             rs =a.get_result_set()
-            if ctr%100 == 0:
-                acc_pre = "acc-k-11-%i" %ctr
-                a.save_acc( '/scratch/sgeadmin', acc_pre )
-                print "saving %s" %acc_pre 
-        a.save_acc( '/scratch/sgeadmin')
-        
+        acc_pre = "acc-k-11-%i-%i" %(ctr, comm.rank)
+        a.save_acc( '/scratch/sgeadmin', acc_pre)
+        strains = a.acc_acc.keys()
+        strains.sort()
+        strains = comm.bcast(strains)
+        zero = None
+        for mat in a.acc_acc.itervalues():
+            zero = np.zeros_like(mat, dtype = np.int)
+        for k in strains:
+            if k in a.acc_acc:
+                curr = a.acc_acc[k]
+            else:
+                curr = zero
+            total = np.zeros_like(curr)
+            comm.Reduce([curr, MPI.INT],[total, MPI.INT])
+            if comm.rank == 0:
+                a.acc_acc[k] = total
+            total_count = 0
+            print "acc", a.acc_count[k]
+            total_count = comm.reduce(a.acc_count[k])
+            if comm.rank == 0:
+                print total_count
+                divisor = float(total_count)
+                pv_table = a.acc_acc[k]/divisor
+                file_loc = '/scratch/sgeadmin/pvals-%s-%s-%s.csv' % (
+                    a.run_config['run_settings']['k'], a.run_id, mask_id) 
+                a.generate_csv( pv_table, column_names = a.get_mask_labels(), 
+                    index=a.networks,  filename=file_loc)
+                a.write_csv(s3_csvs, file_loc)
+
+
+        if comm.rank==0:
+            a.save_acc( '/scratch/sgeadmin', 'acc-k-11-combined-total' )
         print "No more results"
-    if False:
+    if rec:
+        print "Recycling"
         recycle(sqs_recycling_to_agg, sqs_data_to_agg)
