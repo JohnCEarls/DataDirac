@@ -87,12 +87,11 @@ class ResultSet(object):
                     buffered_matrix = np.load( temp )
                 complete = True
             except Exception as e:
-                 print e
-                 print "error on get[%r], trying again" % self.result_files[allele] 
+                 #print e
+                 #print "error on get[%r], trying again" % self.result_files[allele] 
                  count += 1
-                 time.sleep(.5)
-                 if count >10:
-                     raise FileCorruption
+                 if count > 1:
+                     raise FileCorruption('Error on File')
                  pass
         return buffered_matrix[:self.nnets, :self.nsamp]
 
@@ -141,6 +140,8 @@ class ResultSet(object):
                 self._mask = np.array(range(self.nsamp))
             elif mask_id == 'lt12':
                 self._mask = self._select_range( 0.0, 12.0)
+            elif mask_id == 'gte12':
+                self._mask = self._select_range( 12.0, 120.0)
         return self._mask
 
     def _select_range(self, start, end):
@@ -237,7 +238,8 @@ class Aggregator:
                 print rs.get_run_id()
                 print rs.spec_string
             except FileCorruption as fc:
-                print "Corrupt file"
+                pass
+                #print "Corrupt file"
         else:
             print "Found Truth"
         self.data_queue.delete_message(self.prev_msg)
@@ -377,9 +379,10 @@ class Aggregator:
     def get_mask_labels(self):
         if self.mask_id == 'all':
             return ['All times']
-        elif self.mask_id == 'half':
-            return ['first half', 'second half']
-
+        elif self.mask_id == 'lt12':
+            return ['less than 12 weeks']
+        elif self.mask_id == 'gte12':
+            return ['less than 12 weeks']
 
 class Truthiness(Aggregator):
     def handle_result_set(self, rs):
@@ -411,15 +414,17 @@ def recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
 
 if __name__ == "__main__":
     from  mpi4py import MPI
-    sqs_data_to_agg = 'from-data-to-agg-go' 
-    sqs_truth_to_agg = 'from-data-to-agg-truth'
-    sqs_recycling_to_agg = 'recycling-go'
+    #sqs_data_to_agg = 'from-data-to-agg-go' 
+    sqs_data_to_agg = 'recycling-go' 
+    sqs_truth_to_agg = 'from-data-to-agg-go-truth'
+    #sqs_recycling_to_agg = 'recycling-go'
+    sqs_recycling_to_agg = 'from-data-to-agg-go'
     s3_from_gpu = 'ndp-from-gpu-to-agg'
     s3_results = 'ndp-gpudirac-results'
     run_truth_table = 'truth_gpudirac_hd'
     s3_csvs = 'ndp-hdproject-csvs'
     by_network = True
-    mask_id = 'lt12'
+    mask_id ='all'
 
     comm = MPI.COMM_WORLD
     truth_only = False 
@@ -435,16 +440,17 @@ if __name__ == "__main__":
     rec = comm.bcast(rec)
     if truth_only:
         print "I want the truth!!!"
-        a = Truthiness( sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
+        a = Truthiness( sqs_truth_to_agg, sqs_truth_to_agg, s3_from_gpu, 
                 s3_results, run_truth_table, by_network, mask_id)
         rs =a.get_result_set()
         ctr = 0
-        while not a.handle_result_set(rs):
-            print "not the truth", ctr
-    pira       rs =a.get_result_set()
-            if rs is None:
-                break 
-            ctr += 1
+        if rs:
+            while not a.handle_result_set(rs):
+                print "not the truth", ctr
+                rs =a.get_result_set()
+                if rs is None:
+                    break 
+                ctr += 1
     elif not rec:
         print "Aggregating"
         a = Aggregator( sqs_data_to_agg, sqs_recycling_to_agg, s3_from_gpu, 

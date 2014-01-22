@@ -223,6 +223,8 @@ class DataNode(MPINode):
         self.logger.info("Cluster init starting")
         self.data_sqs_queue = self.world_comm.bcast()
         self.logger.debug("data_sqs_queue: %s" % self.data_sqs_queue )
+        self.data_sqs_queue_truth = self.world_comm.bcast()
+        self.logger.debug("data_sqs_queue_truth: %s" % self.data_sqs_queue_truth )
         self.gpu_sqs_queue = self.world_comm.bcast()
         self.logger.debug("gpu_sqs_queue: %s" % self.gpu_sqs_queue )
         self.working_dir = self.world_comm.bcast() 
@@ -294,7 +296,10 @@ class DataNode(MPINode):
                 num_runs -= 1
             self._save_log( '\n'.join( run_log ) + '\n' )
             self._transmit_sqs( gpu_sqs_msgs, self.gpu_sqs_queue )
-            self._transmit_sqs( data_sqs_msgs, self.data_sqs_queue )
+            if shuffle:
+                self._transmit_sqs( data_sqs_msgs, self.data_sqs_queue )
+            else:
+                self._transmit_sqs( data_sqs_msgs, self.data_sqs_queue_truth )
             return True
         else:
             self.world_comm.send(self.world_comm.rank, tag=WORKER_EXIT)
@@ -620,8 +625,10 @@ class MasterDataNode(DataNode):
     def _set_settings( self, settings ):
         self.data_sqs_queue = settings['data_sqs_queue']
         self.gpu_sqs_queue = settings['gpu_sqs_queue']
+        self.data_sqs_queue_truth = settings['data_sqs_queue_truth']
         conn = boto.sqs.connect_to_region('us-east-1')
         conn.create_queue( self.data_sqs_queue )
+        conn.create_queue( self.data_sqs_queue_truth )
         conn.create_queue( self.gpu_sqs_queue )
         self.working_bucket = settings['working_bucket']
         conn = boto.connect_s3()
@@ -666,6 +673,8 @@ class MasterDataNode(DataNode):
         self.logger.info("Cluster init starting")
         self.data_sqs_queue = self.world_comm.bcast(self.data_sqs_queue)
         self.logger.debug("data_sqs_queue: %s" % self.data_sqs_queue )
+        self.data_sqs_queue_truth = self.world_comm.bcast(
+                                                self.data_sqs_queue_truth)
         self.gpu_sqs_queue = self.world_comm.bcast(self.gpu_sqs_queue )
         self.logger.debug("gpu_sqs_queue: %s" % self.gpu_sqs_queue )
         self.working_dir = self.world_comm.bcast(self.working_dir ) 
