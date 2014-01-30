@@ -3,6 +3,7 @@ from pandas import DataFrame
 import pandas
 import logging
 import os.path
+from collections import defaultdict
 
 class SourceData:
     """
@@ -136,7 +137,7 @@ class NetworkInfo:
     """
     Stores network information
     """
-    def __init__(self, table_name, source_id):
+    def __init__(self, table_name, source_id, pw_init=True):
         self.logger = logging.getLogger('NetworkInfo')
         self.table_name = table_name
         #self.table = Table(table_name)
@@ -144,8 +145,10 @@ class NetworkInfo:
         self.gene_map = {}
         #clean refers to the genes being filtered to match the genes
         #available in the expression file
-        self.gene_clean = {}
+        self.gene_clean = defaultdict(bool)
         self.pathways = []
+        if pw_init:
+            self.get_pathways()
 
     def get_genes(self, pathway_id, cache=True):
         """
@@ -170,13 +173,12 @@ class NetworkInfo:
         if len(self.pathways) == 0:
             table = Table(self.table_name)
             pw_ids = table.query(src_id__eq=self.source_id, attributes=('pw_id','gene_ids'))
-            #simple load balancing
-            t = [(len(pw['gene_ids'].split('~:~')), pw['pw_id']) for pw in pw_ids]
-            t.sort()
-            self.pathways = [pw for _,pw in t]            
             for pw in pw_ids:
                 self.gene_map[pw['pw_id']] =pw['gene_ids'][6:].split('~:~')
-                self.gene_clean[pathway_id] = False
+            #simple load balancing
+            t = [(len(g), p) for p,g in self.gene_map.iteritems()]
+            t.sort()
+            self.pathways = [pw for _,pw in t]            
         return self.pathways
 
     def is_clean(self, pathway_id):
