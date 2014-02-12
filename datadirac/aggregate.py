@@ -16,6 +16,7 @@ from boto.dynamodb2.exceptions import ConditionalCheckFailedException
 import os.path
 from datadirac.data import NetworkInfo
 import pandas
+import re
 
 class TruthException(Exception):
     pass
@@ -142,6 +143,12 @@ class ResultSet(object):
                 self._mask = self._select_range( 0.0, 12.0)
             elif mask_id == 'gte12':
                 self._mask = self._select_range( 12.0, 120.0)
+            else:
+                m = re.match(r'\[(\d+),(\d+)\)', mask_id)
+                if m:
+                    lower = float(m.group(1)) - .0001
+                    upper = float(m.group(2)) + .0001
+                    self._mask = self._select_range( lower, upper)
         return self._mask
 
     def _select_range(self, start, end):
@@ -382,7 +389,9 @@ class Aggregator:
         elif self.mask_id == 'lt12':
             return ['less than 12 weeks']
         elif self.mask_id == 'gte12':
-            return ['less than 12 weeks']
+            return ['greater than 12 weeks']
+        else:
+            return [self.mask_id]
 
 class Truthiness(Aggregator):
     def handle_result_set(self, rs):
@@ -412,89 +421,119 @@ def recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
             print "%i messages enqueued." % rec.count()
             start=rec.count()
 
-if __name__ == "__main__":
-    from  mpi4py import MPI
-    #sqs_data_to_agg = 'from-data-to-agg-go' 
-    sqs_data_to_agg = 'recycling-go' 
+def run_once(comm, mask_id ):
+    sqs_data_to_agg = 'from-data-to-agg-go' 
     sqs_truth_to_agg = 'from-data-to-agg-go-truth'
-    #sqs_recycling_to_agg = 'recycling-go'
-    sqs_recycling_to_agg = 'from-data-to-agg-go'
+    sqs_recycling_to_agg = 'from-data-to-agg-go-bak'
     s3_from_gpu = 'ndp-from-gpu-to-agg'
     s3_results = 'ndp-gpudirac-results'
     run_truth_table = 'truth_gpudirac_hd'
     s3_csvs = 'ndp-hdproject-csvs'
     by_network = True
-    mask_id ='all'
-
-    comm = MPI.COMM_WORLD
-    truth_only = False 
+  
     rec = None
     if comm.rank == 0:
         sqs = boto.connect_sqs()
         d2a = sqs.create_queue( sqs_data_to_agg )
+        d2a_bak =  sqs.create_queue( sqs_recycling_to_agg )
         print "Num data %i" % d2a.count()
         if d2a.count() > 0:
             rec = False 
         else:
+            assert d2a_bak.count() > 0, "both queues empty"
             rec = True
     rec = comm.bcast(rec)
-    if truth_only:
+    if rec:
+        sqs_data_to_agg, sqs_recycling_to_agg = sqs_recycling_to_agg, sqs_data_to_agg
+    if comm.rank == 0:
         print "I want the truth!!!"
         a = Truthiness( sqs_truth_to_agg, sqs_truth_to_agg, s3_from_gpu, 
                 s3_results, run_truth_table, by_network, mask_id)
         rs =a.get_result_set()
-        ctr = 0
         if rs:
             while not a.handle_result_set(rs):
                 print "not the truth", ctr
                 rs =a.get_result_set()
                 if rs is None:
                     break 
-                ctr += 1
-    elif not rec:
-        print "Aggregating"
-        a = Aggregator( sqs_data_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
-                s3_results, run_truth_table, by_network, mask_id)
+    comm.Barrier()
+    print "Aggregating"
+    a = Aggregator( sqs_data_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
+            s3_results, run_truth_table, by_network, mask_id)
+    rs =a.get_result_set()
+    rid = rs.get_run_id()
+    st = rs.spec_string
+    ctr = 0
+    while rs:
+        ctr += 1
+        a.handle_result_set(rs) 
         rs =a.get_result_set()
-        ctr = 0
-        while rs:
-            ctr += 1
-            a.handle_result_set(rs) 
-            rs =a.get_result_set()
-        acc_pre = "acc-k-11-%i-%i" %(ctr, comm.rank)
-        a.save_acc( '/scratch/sgeadmin', acc_pre)
-        strains = a.acc_acc.keys()
-        strains.sort()
-        strains = comm.bcast(strains)
-        zero = None
-        for mat in a.acc_acc.itervalues():
-            zero = np.zeros_like(mat, dtype = np.int)
-        for k in strains:
-            if k in a.acc_acc:
-                curr = a.acc_acc[k]
-            else:
-                curr = zero
-            total = np.zeros_like(curr)
-            comm.Reduce([curr, MPI.INT],[total, MPI.INT])
-            if comm.rank == 0:
-                a.acc_acc[k] = total
-            total_count = 0
-            print "acc", a.acc_count[k]
-            total_count = comm.reduce(a.acc_count[k])
-            if comm.rank == 0:
-                print total_count
-                divisor = float(total_count)
-                pv_table = a.acc_acc[k]/divisor
-                file_loc = '/scratch/sgeadmin/pvals-%s-%s-%s.csv' % (
-                    a.run_config['run_settings']['k'], a.run_id, mask_id) 
-                a.generate_csv( pv_table, column_names = a.get_mask_labels(), 
-                    index=a.networks,  filename=file_loc)
-                a.write_csv(s3_csvs, file_loc)
+    acc_pre = "acc-k-11-%i-%i" %(ctr, comm.rank)
+    a.save_acc( '/scratch/sgeadmin', acc_pre)
+    strains = a.acc_acc.keys()
+    strains.sort()
+    strains = comm.bcast(strains)
+    zero = None
+    for mat in a.acc_acc.itervalues():
+        zero = np.zeros_like(mat, dtype = np.int)
+    for k in strains:
+        if k in a.acc_acc:
+            curr = a.acc_acc[k]
+        else:
+            curr = zero
+        total = np.zeros_like(curr)
+        comm.Reduce([curr, MPI.INT],[total, MPI.INT])
+        if comm.rank == 0:
+            a.acc_acc[k] = total
+        total_count = 0
+        print "acc", a.acc_count[k]
+        total_count = comm.reduce(a.acc_count[k])
+        if comm.rank == 0:
+            print total_count
+            divisor = float(total_count)
+            pv_table = a.acc_acc[k]/divisor
+            file_loc = '/scratch/sgeadmin/pvals-%s-%s-%s.csv' % (
+                a.run_config['run_settings']['k'], a.run_id, mask_id) 
+            a.generate_csv( pv_table, column_names = a.get_mask_labels(), 
+                index=a.networks,  filename=file_loc)
+            a.write_csv(s3_csvs, file_loc)
+            try:
+                res = TruthGPUDiracModel.query(rid, st)
+                for r in res:
+                    r.pval_file = os.path.split(file_loc)[1]
+                    r.mask = a.get_mask_labels()
+                    r.save()
+            except Exception as e:
+                print "Unable to store in dynamo"
+                print "%r" % e
+    if comm.rank==0:
+        a.save_acc( '/scratch/sgeadmin', 'acc-k-11-combined-total' )
+    comm.Barrier()
 
+from pynamodb.models import Model
+from pynamodb.attributes import UnicodeAttribute,UnicodeSetAttribute
 
-        if comm.rank==0:
-            a.save_acc( '/scratch/sgeadmin', 'acc-k-11-combined-total' )
-        print "No more results"
-    if rec:
-        print "Recycling"
-        recycle(sqs_recycling_to_agg, sqs_data_to_agg)
+class TruthGPUDiracModel(Model):
+    table_name='truth_gpudirac_hd'
+    run_id = UnicodeAttribute(hash_key=True)
+    strain_id = UnicodeAttribute(range_key=True)
+    accuracy_file = UnicodeAttribute(default='')
+    bucket =  UnicodeAttribute(default='')
+    result_files =  UnicodeAttribute(default='')
+    timestamp =  UnicodeAttribute(default='')
+    pval_file = UnicodeAttribute(default='')
+    mask = UnicodeSetAttribute(default=[])
+
+class RunGPUDiracModel(Model):
+    table_name='run_gpudirac_hd'
+    run_id = UnicodeAttribute(hash_key=True)
+    timestamp = UnicodeAttribute(range_key=True)
+    config = UnicodeAttribute(default='')
+    k = UnicodeAttribute(default='')
+
+if __name__ == "__main__":
+    from  mpi4py import MPI
+    mask_id = ["[%i,%i)" % (i, i+3) for i in range(4,18)]
+    comm = MPI.COMM_WORLD
+    for mask in mask_id:
+        run_once(comm, mask) 
