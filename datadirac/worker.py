@@ -139,7 +139,7 @@ class MPINode:
                     os.makedirs(d)
                 except OSError:
                     if e_ctr < 10:
-                        self.logger.exception("Trying again")
+                        self.logger.exception("****RECOVERABLE: Trying again***")
                         time.sleep(random.random()*e_ctr)
                     else:
                         e_ctr += 1
