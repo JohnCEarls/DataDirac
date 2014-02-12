@@ -498,7 +498,7 @@ def run_once(comm, mask_id ):
                 index=a.networks,  filename=file_loc)
             a.write_csv(s3_csvs, file_loc)
             try:
-                res = TruthGPUDiracModel.query(rid, st)
+                res = TruthGPUDiracModel.query(rid, strain_id__eq=st)
                 for r in res:
                     r.pval_file = os.path.split(file_loc)[1]
                     r.mask = a.get_mask_labels()
