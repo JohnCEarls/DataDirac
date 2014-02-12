@@ -531,9 +531,97 @@ class RunGPUDiracModel(Model):
     config = UnicodeAttribute(default='')
     k = UnicodeAttribute(default='')
 
+class DataForDisplay(Model):
+    table_name = 'tcdirac-data-for-display'
+    identifier = UnicodeAttribute(hash_key = True)
+    timestamp = UnicodeAttribute(range_key=True)
+    strains = UnicodeSetAttribute(default=[])
+    alleles = UnicodeSetAttribute(default=[])
+    description = UnicodeAttribute(default='')
+    data_bucket = UnicodeAttribute(default='')
+    data_file = UnicodeAttribute(default='')
+    column_label = UnicodeAttribute(default='')
+    row_label = UnicodeAttribute(default='')
+    network = UnicodeAttribute(default='')
+
+def join_run( run_id, csv_bucket, mask_id, strains, alleles, description, 
+        column_label, row_label, network_desc ):
+    rs =  TruthGPUDiracModel.query( run_id )
+    res_list = []
+    for result in rs:
+        temp = {}
+        temp['csv'] = result.pval_file
+        temp['range'] = list(result.mask)[0]
+        m = re.match(r'\[(\d+),(\d+)\)', temp['range'])
+        temp['start'] = int(m.group(1))
+        if temp['range'] in mask_id:
+            res_list.append( temp )
+    res_list.sort(key=lambda x:x['start'])
+    s3 = boto.connect_s3()
+    b = s3.get_bucket( csv_bucket )
+    pv_list = []
+    for res in res_list:
+        k = b.get_key( res['csv'] )
+        csv = k.get_contents_as_string()
+        first = True
+        temp = {}
+        for line in csv.split('\n'):
+            if first:
+                first = False
+            else:
+                if line.strip():
+                    network, pval = line.split(',')
+                    temp[network] = pval
+        pv_list.append(temp)
+    master = defaultdict(list)
+    for col in  pv_list:
+        for k,v in col.iteritems():
+            master[k].append(v)
+    table = [['networks'] + [r['range'] for r in res_list]]
+    for k,v in master.iteritems():
+        table.append([k] + v)
+    my_table = ''
+    for row in table:
+        my_table += '\t'.join(row) + '\n'
+    ts = datetime.datetime.utcnow().strftime('%Y.%m.%d.%H:%M:%S')
+    tsv_name = "%s-joined-%s.tsv" % (run_id,ts)
+    with open(tsv_name, 'w') as joined:
+        joined.write( my_table )
+    k = Key(b)
+    k.key = tsv_name
+    k.set_contents_from_filename(tsv_name)
+    if not DataForDisplay.exists():
+        DataForDisplay.create_table( wait=True, read_capacity_units=2, write_capacity_units=1)
+    dfd_item = DataForDisplay( run_id, ts )
+    #    strains, allele,description, column_label, row_label ):
+    dfd_item.strains = strains
+    dfd_item.alleles = alleles
+    dfd_item.description = description
+    dfd_item.data_bucket = csv_bucket
+    dfd_item.column_label = column_label
+    dfd_item.row_label = row_label
+    dfd_item.data_file = tsv_name
+    dfd_item.network = network_desc
+    dfd_item.save()
+
+
 if __name__ == "__main__":
+    mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
+
+    strains=['B6']
+    alleles=['WT','Q111']
+    column_label='time range'
+    row_label='GO gene set'
+    network_desc='GO all'
+    description = ("Pvalues testing null between %s and %s in %s over time ranges [ %s ] "
+            " for %s.(periods of 5 weeks)") % (alleles[0], alleles[1], strains[0], 
+                    ', '.join(mask_id), network_desc)
     from  mpi4py import MPI
-    mask_id = ["[%i,%i)" % (i, i+3) for i in range(4,18)]
     comm = MPI.COMM_WORLD
-    for mask in mask_id:
-        run_once(comm, mask) 
+    for mask in mask_id[8:]:
+        run_once(comm, mask)
+    comm.Barrier()
+    if comm.rank == 0:
+        join_run( 'black_6_go_4','ndp-hdproject-csvs', mask_id, strains, alleles,
+            description, column_label, row_label, network_desc )
+    comm.Barrier()
