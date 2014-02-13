@@ -220,7 +220,7 @@ class Aggregator:
         return self._data_queue
 
     def get_result_set(self):
-        m = self.data_queue.read(50)
+        m = self.data_queue.read(500)
         if m:
             #put message away for future consumption
             self.recycling_queue.write( Message(body=m.get_body()) )
@@ -410,7 +410,7 @@ def recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
     max_count = 500000
     start = rec.count()
     while rec.count() > 0:
-        m = rec.read(60)
+        m = rec.read(600)
         if m:
             d2a.write(m)
             rec.delete_message(m)
