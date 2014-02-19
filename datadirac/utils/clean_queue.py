@@ -17,8 +17,7 @@ def clean( q1, q2):
 
 if __name__  == "__main__":
     sqs = boto.connect_sqs()
-    frm = sqs.get_queue('from-data-to-agg-go-bak')
-    to = sqs.get_queue('from-data-to-agg-go')
-    to.clear()
-
+    frm = sqs.get_queue('from-data-to-agg-react')
+    to = sqs.get_queue('from-data-to-agg-react-bak')
     clean(frm, to)
+    frm.clear()

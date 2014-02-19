@@ -421,14 +421,7 @@ def recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
             print "%i messages enqueued." % rec.count()
             start=rec.count()
 
-def run_once(comm, mask_id ):
-    sqs_data_to_agg = 'from-data-to-agg-go' 
-    sqs_truth_to_agg = 'from-data-to-agg-go-truth'
-    sqs_recycling_to_agg = 'from-data-to-agg-go-bak'
-    s3_from_gpu = 'ndp-from-gpu-to-agg'
-    s3_results = 'ndp-gpudirac-results'
-    run_truth_table = 'truth_gpudirac_hd'
-    s3_csvs = 'ndp-hdproject-csvs'
+def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs ):
     by_network = True
   
     rec = None
@@ -437,7 +430,7 @@ def run_once(comm, mask_id ):
         d2a = sqs.create_queue( sqs_data_to_agg )
         d2a_bak =  sqs.create_queue( sqs_recycling_to_agg )
         print "Num data %i" % d2a.count()
-        if d2a.count() > 0:
+        if d2a.count() > 100:
             rec = False 
         else:
             assert d2a_bak.count() > 0, "both queues empty"
@@ -540,6 +533,7 @@ class DataForDisplay(Model):
     description = UnicodeAttribute(default='')
     data_bucket = UnicodeAttribute(default='')
     data_file = UnicodeAttribute(default='')
+    qvalue_file = UnicodeAttribute(default='')
     column_label = UnicodeAttribute(default='')
     row_label = UnicodeAttribute(default='')
     network = UnicodeAttribute(default='')
@@ -606,22 +600,32 @@ def join_run( run_id, csv_bucket, mask_id, strains, alleles, description,
 
 
 if __name__ == "__main__":
-    mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
+    run_id = 'black_6_react_wt_q111_4'
+    sqs_data_to_agg = 'from-data-to-agg-react' 
+    sqs_truth_to_agg = 'from-data-to-agg-react-truth'
+    sqs_recycling_to_agg = 'from-data-to-agg-react-bak'
+    s3_from_gpu = 'ndp-from-gpu-to-agg-react'
+    s3_results = 'ndp-gpudirac-results'
+    run_truth_table = 'truth_gpudirac_hd'
 
+    s3_csvs = 'ndp-hdproject-csvs'
+
+    mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
+    mask_id += ["[4,20)", "[4,12)", "[12,20)"]
     strains=['B6']
     alleles=['WT','Q111']
     column_label='time range'
-    row_label='GO gene set'
-    network_desc='GO all'
+    row_label='REACTOME gene set'
+    network_desc='REACTOME'
     description = ("Pvalues testing null between %s and %s in %s over time ranges [ %s ] "
             " for %s.(periods of 5 weeks)") % (alleles[0], alleles[1], strains[0], 
                     ', '.join(mask_id), network_desc)
     from  mpi4py import MPI
     comm = MPI.COMM_WORLD
-    for mask in mask_id[8:]:
-        run_once(comm, mask)
+    for mask in mask_id[-2:]:
+        run_once(comm, mask,  sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs )
     comm.Barrier()
     if comm.rank == 0:
-        join_run( 'black_6_go_4','ndp-hdproject-csvs', mask_id, strains, alleles,
+        join_run( run_id, s3_csvs, mask_id, strains, alleles,
             description, column_label, row_label, network_desc )
     comm.Barrier()
