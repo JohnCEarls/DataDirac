@@ -454,8 +454,10 @@ def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to
     a = Aggregator( sqs_data_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
             s3_results, run_truth_table, by_network, mask_id)
     rs =a.get_result_set()
-    rid = rs.get_run_id()
-    st = rs.spec_string
+    
+    if comm.rank == 0:
+        rid = rs.get_run_id()
+        st = rs.spec_string
     ctr = 0
     while rs:
         ctr += 1
@@ -622,7 +624,7 @@ if __name__ == "__main__":
                     ', '.join(mask_id), network_desc)
     from  mpi4py import MPI
     comm = MPI.COMM_WORLD
-    for mask in mask_id[-2:]:
+    for mask in [ "[4,12)", "[12,20)"]:# mask_id[-2:]:
         run_once(comm, mask,  sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs )
     comm.Barrier()
     if comm.rank == 0:
