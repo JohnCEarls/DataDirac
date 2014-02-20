@@ -16,8 +16,10 @@ def clean( q1, q2):
         a = q1.read()
 
 if __name__  == "__main__":
+    from  mpi4py import MPI
+    comm = MPI.COMM_WORLD
     sqs = boto.connect_sqs()
-    frm = sqs.get_queue('from-data-to-agg-react')
-    to = sqs.get_queue('from-data-to-agg-react-bak')
+    frm = sqs.get_queue('from-data-to-agg-kegg')
+    to = sqs.get_queue('from-data-to-agg-kegg-bak')
     clean(frm, to)
-    frm.clear()
+

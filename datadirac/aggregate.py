@@ -214,21 +214,31 @@ class Aggregator:
 
     @property
     def data_queue(self):
-        if not self._data_queue:
-            conn = boto.sqs.connect_to_region('us-east-1')
-            self._data_queue = conn.get_queue(self.sqs_data_to_agg)
+        ctr = 0 
+        while not self._data_queue:
+            try:
+                conn = boto.sqs.connect_to_region('us-east-1')
+                self._data_queue = conn.get_queue(self.sqs_data_to_agg)
+            except:
+                print "authhandler exception"
+                time.sleep(2)
+                ctr += 1
+                if ctr > 10:
+                    raise Exception("Fuck")
         return self._data_queue
 
     def get_result_set(self):
-        m = self.data_queue.read(500)
-        if m:
-            #put message away for future consumption
-            self.recycling_queue.write( Message(body=m.get_body()) )
-            inst = json.loads( m.get_body() )
-            self.prev_msg = m
-            return ResultSet(inst, self.s3_from_gpu, self.by_network, self.mask_id)
-        else:
-            return None
+        while self.data_queue.count() > 0:
+            m = self.data_queue.read(30)
+            if m:
+                #put message away for future consumption
+                self.recycling_queue.write( Message(body=m.get_body()) )
+                inst = json.loads( m.get_body() )
+                self.prev_msg = m
+                return ResultSet(inst, self.s3_from_gpu, self.by_network, self.mask_id)
+            else:
+                self._data_queue = None
+        return None
 
     def handle_result_set(self, rs):
         if self._run_id is None:
@@ -410,7 +420,7 @@ def recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
     max_count = 500000
     start = rec.count()
     while rec.count() > 0:
-        m = rec.read(600)
+        m = rec.read(30)
         if m:
             d2a.write(m)
             rec.delete_message(m)
@@ -429,8 +439,9 @@ def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to
         sqs = boto.connect_sqs()
         d2a = sqs.create_queue( sqs_data_to_agg )
         d2a_bak =  sqs.create_queue( sqs_recycling_to_agg )
-        print "Num data %i" % d2a.count()
-        if d2a.count() > 100:
+        print "Num data %i in %s" %  (d2a.count(), sqs_data_to_agg)
+        print "Num data %i in %s" %  (d2a_bak.count(), sqs_recycling_to_agg)
+        if d2a.count() > d2a_bak.count():
             rec = False 
         else:
             assert d2a_bak.count() > 0, "both queues empty"
@@ -450,7 +461,7 @@ def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to
                 if rs is None:
                     break 
     comm.Barrier()
-    print "Aggregating"
+    #print "Aggregating", mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs
     a = Aggregator( sqs_data_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
             s3_results, run_truth_table, by_network, mask_id)
     rs =a.get_result_set()
@@ -463,6 +474,7 @@ def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to
         ctr += 1
         a.handle_result_set(rs) 
         rs =a.get_result_set()
+    comm.Barrier()
     acc_pre = "acc-k-11-%i-%i" %(ctr, comm.rank)
     a.save_acc( '/scratch/sgeadmin', acc_pre)
     strains = a.acc_acc.keys()
@@ -484,7 +496,7 @@ def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to
         print "acc", a.acc_count[k]
         total_count = comm.reduce(a.acc_count[k])
         if comm.rank == 0:
-            print total_count
+            print "total obs. %i" % total_count
             divisor = float(total_count)
             pv_table = a.acc_acc[k]/divisor
             file_loc = '/scratch/sgeadmin/pvals-%s-%s-%s.csv' % (
@@ -602,11 +614,11 @@ def join_run( run_id, csv_bucket, mask_id, strains, alleles, description,
 
 
 if __name__ == "__main__":
-    run_id = 'black_6_react_wt_q111_4'
-    sqs_data_to_agg = 'from-data-to-agg-react' 
-    sqs_truth_to_agg = 'from-data-to-agg-react-truth'
-    sqs_recycling_to_agg = 'from-data-to-agg-react-bak'
-    s3_from_gpu = 'ndp-from-gpu-to-agg-react'
+    run_id = 'black_6_kegg_wt_q111_4'
+    sqs_data_to_agg = 'from-data-to-agg-kegg' 
+    sqs_truth_to_agg = 'from-data-to-agg-kegg-truth'
+    sqs_recycling_to_agg = 'from-data-to-agg-kegg-bak'
+    s3_from_gpu = 'ndp-from-gpu-to-agg-kegg'
     s3_results = 'ndp-gpudirac-results'
     run_truth_table = 'truth_gpudirac_hd'
 
@@ -617,15 +629,17 @@ if __name__ == "__main__":
     strains=['B6']
     alleles=['WT','Q111']
     column_label='time range'
-    row_label='REACTOME gene set'
-    network_desc='REACTOME'
+    row_label='KEGG'
+    network_desc='KEGG pathways'
     description = ("Pvalues testing null between %s and %s in %s over time ranges [ %s ] "
             " for %s.(periods of 5 weeks)") % (alleles[0], alleles[1], strains[0], 
                     ', '.join(mask_id), network_desc)
     from  mpi4py import MPI
     comm = MPI.COMM_WORLD
-    for mask in [ "[4,12)", "[12,20)"]:# mask_id[-2:]:
+    for mask in mask_id[6:]:
+        print "Mask: ", mask
         run_once(comm, mask,  sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs )
+
     comm.Barrier()
     if comm.rank == 0:
         join_run( run_id, s3_csvs, mask_id, strains, alleles,
