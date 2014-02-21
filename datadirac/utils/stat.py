@@ -42,8 +42,6 @@ def qvalues( pvals ):
     kw = {'pi0.method':'bootstrap'}
 
     res = qvalue_obj.qvalue(FloatVector(pvals), **kw)
-    print "warnings",base.warnings()
-    print "res", res
     try:
         _, pi0_r, qv_r, pv_r, lam_r = res 
     except ValueError:
