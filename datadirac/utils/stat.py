@@ -3,12 +3,14 @@ import pandas
 from collections import defaultdict
 
 def get_fdr_cutoffs( tsv_file, index='networks', alphas=[.05, .01] ):
+    for a in alphas:
+        if a < .01:
+            raise Exception("Alphas only go to .01, easy to fix, but I have bigger fish to fry")
     b6 = pandas.read_csv( tsv_file , sep='\t')
     b6.set_index(index)
     cutoffs = defaultdict(dict)
     for alpha in alphas:
         for c in b6.columns:
-            print c
             if c != index:
                 cutoff = pval.fdr_threshold(b6[c].values, alpha=alpha)
                 cutoffs[c]["{:.2f}".format(alpha)] = cutoff
