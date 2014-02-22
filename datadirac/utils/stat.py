@@ -2,7 +2,7 @@ import nipy.algorithms.statistics.empirical_pvalue as pval
 import pandas
 from collections import defaultdict
 
-def get_fdr_cutoffs( tsv_file, index='networks', alphas=[.05, .01] ):
+def get_fdr_cutoffs( tsv_file, index='networks', alphas=[.05, .01], dec_places=2 ):
     for a in alphas:
         if a < .01:
             raise Exception("Alphas only go to .01, easy to fix, but I have bigger fish to fry")
@@ -13,7 +13,7 @@ def get_fdr_cutoffs( tsv_file, index='networks', alphas=[.05, .01] ):
         for c in b6.columns:
             if c != index:
                 cutoff = pval.fdr_threshold(b6[c].values, alpha=alpha)
-                cutoffs[c]["{:.2f}".format(alpha)] = cutoff
+                cutoffs[c][("{:.%if}"%dec_places ).format(alpha)] = cutoff
     return cutoffs
 
 
