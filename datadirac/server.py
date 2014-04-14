@@ -6,24 +6,19 @@ import sys
 
 def push_log():
     import time
-    import argparse
-    import ConfigParser
     import os, os.path
     import boto.utils
     import boto
     from boto.s3.key import Key
     #only master reads config
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', help='Configfile name', required=True)
-    args = parser.parse_args()
-    config = ConfigParser.RawConfigParser()
-    config.read(args.config)
-    log_file = config.get('logging', 'logging_file')
+    import masterdirac.models.systemdefaults as sys_def
+    config = sys_def.get_system_defaults( 'logging', 'Data Cluster')
+    log_file = config['logging_file']
     inst_id = boto.utils.get_instance_metadata()['instance-id']
     ctime = time.strftime('%Y-%m-%d-%T', time.gmtime())
-    lf_name = config.get('logging', 'log_s3_name_format') % (inst_id,ctime)
+    lf_name =config['log_s3_name_format'] % (inst_id,ctime)
     conn = boto.connect_s3()
-    bkt = conn.create_bucket(config.get('logging', 'log_bucket') )
+    bkt = conn.create_bucket( config['log_bucket'] )
     k = Key(bkt)
     k.key = lf_name
     k.set_metadata('project', 'HD')
@@ -66,25 +61,20 @@ LEVELS = {'DEBUG': logging.DEBUG,
 
 def main():
     comm = MPI.COMM_WORLD
-    import argparse
-    import ConfigParser
     import os, os.path
     name = "InitNode[%i]" % comm.rank
     if comm.rank == 0:
         #only master reads config
-        parser = argparse.ArgumentParser()
-        parser.add_argument('-c', '--config', help='Configfile name', required=True)
-        args = parser.parse_args()
         defaults = {'boto_level':'ERROR',
                     'std_out_level':None,
                     'level':'ERROR'}
-        config = ConfigParser.ConfigParser(defaults=defaults )
-        config.read(args.config)
         #get logging(master)
-        boto_level = config.get('logging', 'boto_level')
-        std_out_level = config.get('logging', 'std_out_level')
-        level = config.get('logging', 'level')
-        logging_file = config.get('logging', 'logging_file')
+        import masterdirac.models.systemdefaults as sys_def
+        config = sys_def.get_system_defaults( 'logging', 'Data Cluster')
+        boto_level = config['boto_level']
+        std_out_level = config['std_out_level']
+        level = config['level']
+        logging_file = config[ 'logging_file']
         #bcast logging
         comm.bcast(boto_level)
         comm.bcast(std_out_level)
@@ -105,9 +95,10 @@ def main():
     logger.info( "Logging initialized" )
 
     if comm.rank == 0:
-        data_log_dir = config.get('cluster_init', 'data_log_dir')
-        working_dir =  config.get('cluster_init', 'working_dir')
-        init_q = config.get('cluster_init', 'init_queue')
+        ci_cfg = sys_def.get_system_defaults( 'cluster_init' , 'Data Cluster')
+        data_log_dir = ci_cfg[ 'data_log_dir' ]
+        working_dir =  ci_cfg[ 'working_dir' ]
+        init_q = ci_cfg[ 'init_queue' ]
     else:
         data_log_dir, working_dir,  init_q = (None, None, None)
     run( data_log_dir, working_dir, init_q )
