@@ -98,7 +98,7 @@ def main():
         ci_cfg = sys_def.get_system_defaults( 'cluster_init' , 'Data Cluster')
         data_log_dir = ci_cfg[ 'data_log_dir' ]
         working_dir =  ci_cfg[ 'working_dir' ]
-        init_q = ci_cfg[ 'init_queue' ]
+        init_q = ci_cfg[ 'init-queue' ]
     else:
         data_log_dir, working_dir,  init_q = (None, None, None)
     run( data_log_dir, working_dir, init_q )
