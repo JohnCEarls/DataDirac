@@ -10,7 +10,7 @@ import scipy.misc
 import sys
 sys.path.append('/home/sgeadmin/DataDirac')
 from datadirac.data import NetworkInfo
-
+#postcommit test
 join = os.path.join
 def get_log_files( log_dir ):
     log_files = []
