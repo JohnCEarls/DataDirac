@@ -583,6 +583,9 @@ class MasterDataNode(DataNode):
         self.working_dir = working_dir
         self.init_q_name = init_q
 
+    def get_cluster_name( self ):
+        return '-'.join(socket.gethostname().split('-')[:-1])
+
     def _master_init(self):
         """
         Retrieves settings from master server
@@ -594,6 +597,7 @@ class MasterDataNode(DataNode):
         self._region = self._availabilityzone[:-1]
         init_msg = {'message-type':'data-gen-init',
                     'name':self.name,
+                    'cluster-name': self.get_cluster_name(),
                     'instance-id': md['instance-id'],
                     'command': self.command_q_name,
                     'response': self.response_q_name,
