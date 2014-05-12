@@ -614,29 +614,29 @@ def join_run( run_id, csv_bucket, mask_id, strains, alleles, description,
 
 
 if __name__ == "__main__":
-    run_id = 'black_6_kegg_wt_q111_4'
-    sqs_data_to_agg = 'from-data-to-agg-kegg' 
-    sqs_truth_to_agg = 'from-data-to-agg-kegg-truth'
-    sqs_recycling_to_agg = 'from-data-to-agg-kegg-bak'
-    s3_from_gpu = 'ndp-from-gpu-to-agg-kegg'
-    s3_results = 'ndp-gpudirac-results'
+    run_id = 'joc-demo-1'
+    sqs_data_to_agg = 'from-data-to-agg-joc-demo-1' 
+    sqs_truth_to_agg = 'from-data-to-agg-joc-demo-1-truth'
+    sqs_recycling_to_agg = 'from-data-to-agg-joc-demo-1-bak'
+    s3_from_gpu = 'an-from-gpu-to-agg-joc-demo-1'
+    s3_results = 'an-jocelynn-results'
     run_truth_table = 'truth_gpudirac_hd'
 
-    s3_csvs = 'ndp-hdproject-csvs'
+    s3_csvs = 'an-hdproject-csvs'
 
     mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
     mask_id += ["[4,20)", "[4,12)", "[12,20)"]
     strains=['B6']
     alleles=['WT','Q111']
     column_label='time range'
-    row_label='KEGG'
-    network_desc='KEGG pathways'
+    row_label='biocarta'
+    network_desc='biocarta pathways'
     description = ("Pvalues testing null between %s and %s in %s over time ranges [ %s ] "
             " for %s.(periods of 5 weeks)") % (alleles[0], alleles[1], strains[0], 
                     ', '.join(mask_id), network_desc)
     from  mpi4py import MPI
     comm = MPI.COMM_WORLD
-    for mask in mask_id[6:]:
+    for mask in mask_id:
         print "Mask: ", mask
         run_once(comm, mask,  sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs )
 
