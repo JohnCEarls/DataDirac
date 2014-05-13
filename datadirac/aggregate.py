@@ -15,6 +15,9 @@ import datetime
 from boto.dynamodb2.exceptions import ConditionalCheckFailedException
 import os.path
 from datadirac.data import NetworkInfo
+from masterdirac.models.aggregator import (  TruthGPUDiracModel, 
+        RunGPUDiracModel, DataForDisplay  )
+
 import pandas
 import re
 
@@ -62,7 +65,7 @@ class ResultSet(object):
         while not self._result_bucket:
             try:
                 conn = boto.connect_s3()
-                self._result_bucket = conn.get_bucket(self.s3_from_gpu)
+                self._result_bucket = conn.create_bucket(self.s3_from_gpu)
             except:
                 print "could not connect to %s " % self.s3_from_gpu
                 print "Try again"
@@ -280,7 +283,7 @@ class Aggregator:
 
     def _load_np( self, bucket,  s3_file):
         conn = boto.connect_s3()
-        b = conn.get_bucket( bucket )
+        b = conn.create_bucket( bucket )
         k = Key(b)
         k.key = s3_file
         with tempfile.SpooledTemporaryFile() as temp:
@@ -517,41 +520,6 @@ def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to
         a.save_acc( '/scratch/sgeadmin', 'acc-k-11-combined-total' )
     comm.Barrier()
 
-from pynamodb.models import Model
-from pynamodb.attributes import UnicodeAttribute,UnicodeSetAttribute
-
-class TruthGPUDiracModel(Model):
-    table_name='truth_gpudirac_hd'
-    run_id = UnicodeAttribute(hash_key=True)
-    strain_id = UnicodeAttribute(range_key=True)
-    accuracy_file = UnicodeAttribute(default='')
-    bucket =  UnicodeAttribute(default='')
-    result_files =  UnicodeAttribute(default='')
-    timestamp =  UnicodeAttribute(default='')
-    pval_file = UnicodeAttribute(default='')
-    mask = UnicodeSetAttribute(default=[])
-
-class RunGPUDiracModel(Model):
-    table_name='run_gpudirac_hd'
-    run_id = UnicodeAttribute(hash_key=True)
-    timestamp = UnicodeAttribute(range_key=True)
-    config = UnicodeAttribute(default='')
-    k = UnicodeAttribute(default='')
-
-class DataForDisplay(Model):
-    table_name = 'tcdirac-data-for-display'
-    identifier = UnicodeAttribute(hash_key = True)
-    timestamp = UnicodeAttribute(range_key=True)
-    strains = UnicodeSetAttribute(default=[])
-    alleles = UnicodeSetAttribute(default=[])
-    description = UnicodeAttribute(default='')
-    data_bucket = UnicodeAttribute(default='')
-    data_file = UnicodeAttribute(default='')
-    qvalue_file = UnicodeAttribute(default='')
-    column_label = UnicodeAttribute(default='')
-    row_label = UnicodeAttribute(default='')
-    network = UnicodeAttribute(default='')
-
 def join_run( run_id, csv_bucket, mask_id, strains, alleles, description, 
         column_label, row_label, network_desc ):
     rs =  TruthGPUDiracModel.query( run_id )
@@ -566,7 +534,7 @@ def join_run( run_id, csv_bucket, mask_id, strains, alleles, description,
             res_list.append( temp )
     res_list.sort(key=lambda x:x['start'])
     s3 = boto.connect_s3()
-    b = s3.get_bucket( csv_bucket )
+    b = s3.create_bucket( csv_bucket )
     pv_list = []
     for res in res_list:
         k = b.get_key( res['csv'] )
@@ -619,10 +587,10 @@ if __name__ == "__main__":
     sqs_truth_to_agg = 'from-data-to-agg-joc-demo-1-truth'
     sqs_recycling_to_agg = 'from-data-to-agg-joc-demo-1-bak'
     s3_from_gpu = 'an-from-gpu-to-agg-joc-demo-1'
-    s3_results = 'an-jocelynn-results'
+    s3_results = 'an-jocelynn-results-dev-test'
     run_truth_table = 'truth_gpudirac_hd'
 
-    s3_csvs = 'an-hdproject-csvs'
+    s3_csvs = 'an-hdproject-csvs-dev-test'
 
     mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
     mask_id += ["[4,20)", "[4,12)", "[12,20)"]
@@ -631,8 +599,11 @@ if __name__ == "__main__":
     column_label='time range'
     row_label='biocarta'
     network_desc='biocarta pathways'
-    description = ("Pvalues testing null between %s and %s in %s over time ranges [ %s ] "
-            " for %s.(periods of 5 weeks)") % (alleles[0], alleles[1], strains[0], 
+    description = (
+            "Pvalues testing null between %s and %s "
+            "in %s over time ranges [ %s ] "
+            " for %s.(periods of 5 weeks)"
+            ) % (alleles[0], alleles[1], strains[0], 
                     ', '.join(mask_id), network_desc)
     from  mpi4py import MPI
     comm = MPI.COMM_WORLD
