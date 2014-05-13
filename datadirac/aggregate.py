@@ -65,7 +65,7 @@ class ResultSet(object):
         while not self._result_bucket:
             try:
                 conn = boto.connect_s3()
-                self._result_bucket = conn.create_bucket(self.s3_from_gpu)
+                self._result_bucket = conn.get_bucket(self.s3_from_gpu)
             except:
                 print "could not connect to %s " % self.s3_from_gpu
                 print "Try again"
@@ -91,7 +91,7 @@ class ResultSet(object):
                     buffered_matrix = np.load( temp )
                 complete = True
             except Exception as e:
-                 #print e
+                 print e
                  #print "error on get[%r], trying again" % self.result_files[allele] 
                  count += 1
                  if count > 1:
@@ -283,7 +283,8 @@ class Aggregator:
 
     def _load_np( self, bucket,  s3_file):
         conn = boto.connect_s3()
-        b = conn.create_bucket( bucket )
+        b = conn.get_bucket( bucket )
+
         k = Key(b)
         k.key = s3_file
         with tempfile.SpooledTemporaryFile() as temp:
@@ -587,10 +588,10 @@ if __name__ == "__main__":
     sqs_truth_to_agg = 'from-data-to-agg-joc-demo-1-truth'
     sqs_recycling_to_agg = 'from-data-to-agg-joc-demo-1-bak'
     s3_from_gpu = 'an-from-gpu-to-agg-joc-demo-1'
-    s3_results = 'an-jocelynn-results-dev-test'
+    s3_results = 'an-jocelynn-results'
     run_truth_table = 'truth_gpudirac_hd'
 
-    s3_csvs = 'an-hdproject-csvs-dev-test'
+    s3_csvs = 'an-hdproject-csvs'
 
     mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
     mask_id += ["[4,20)", "[4,12)", "[12,20)"]
@@ -607,7 +608,7 @@ if __name__ == "__main__":
                     ', '.join(mask_id), network_desc)
     from  mpi4py import MPI
     comm = MPI.COMM_WORLD
-    for mask in mask_id:
+    for mask in mask_id[:]:
         print "Mask: ", mask
         run_once(comm, mask,  sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs )
 

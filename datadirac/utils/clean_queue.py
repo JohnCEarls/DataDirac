@@ -19,7 +19,7 @@ if __name__  == "__main__":
     from  mpi4py import MPI
     comm = MPI.COMM_WORLD
     sqs = boto.connect_sqs()
-    frm = sqs.get_queue('from-data-to-agg-kegg')
-    to = sqs.get_queue('from-data-to-agg-kegg-bak')
+    frm = sqs.get_queue('from-data-to-agg-joc-demo-1')
+    to = sqs.get_queue('from-data-to-agg-joc-demo-1-bak')
     clean(frm, to)
 
