@@ -333,8 +333,9 @@ class Aggregator:
         except ConditionalCheckFailedException as ccfe:
             print "*"*20
             print ccfe
-            print  {'run_id':run_id,'strain_id': rs.spec_string}
-            print rs.get_result_files()
+            if rs is not None:
+                print  {'run_id':run_id,'strain_id': rs.spec_string}
+                print rs.get_result_files()
 
     @property
     def truth_table(self):
@@ -583,23 +584,23 @@ def join_run( run_id, csv_bucket, mask_id, strains, alleles, description,
 
 
 if __name__ == "__main__":
-    run_id = 'joc-demo-1'
-    sqs_data_to_agg = 'from-data-to-agg-joc-demo-1' 
-    sqs_truth_to_agg = 'from-data-to-agg-joc-demo-1-truth'
-    sqs_recycling_to_agg = 'from-data-to-agg-joc-demo-1-bak'
-    s3_from_gpu = 'an-from-gpu-to-agg-joc-demo-1'
+    run_id = 'b6-canonical-1'
+    sqs_data_to_agg = 'from-data-to-agg-b6-canonical-1' 
+    sqs_truth_to_agg = 'from-data-to-agg-b6-canonical-1-truth'
+    sqs_recycling_to_agg = 'from-data-to-agg-b6-canonical-1-bak'
+    s3_from_gpu = 'an-from-gpu-to-agg-b6-canonical-1'
     s3_results = 'an-jocelynn-results'
     run_truth_table = 'truth_gpudirac_hd'
 
-    s3_csvs = 'an-hdproject-csvs'
+    s3_csvs = 'an-hdproject-b6-canonical-csvs'
 
     mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
     mask_id += ["[4,20)", "[4,12)", "[12,20)"]
     strains=['B6']
     alleles=['WT','Q111']
     column_label='time range'
-    row_label='biocarta'
-    network_desc='biocarta pathways'
+    row_label='canonical'
+    network_desc='canonical pathways'
     description = (
             "Pvalues testing null between %s and %s "
             "in %s over time ranges [ %s ] "
