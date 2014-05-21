@@ -561,7 +561,7 @@ def join_run( run_id, csv_bucket, mask_id, strains, alleles, description,
     my_table = ''
     for row in table:
         my_table += '\t'.join(row) + '\n'
-    ts = datetime.datetime.utcnow().strftime('%Y.%m.%d.%H:%M:%S')
+    ts = datetime.datetime.utcnow().strftime('%Y-%m-%d-%H.%M')
     tsv_name = "%s-joined-%s.tsv" % (run_id,ts)
     with open(tsv_name, 'w') as joined:
         joined.write( my_table )
