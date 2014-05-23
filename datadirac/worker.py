@@ -138,7 +138,7 @@ class MPINode:
         """
         return self._restart
 
-    def check_restart():
+    def check_restart(self):
         """
         If master says restart, we restart
         """
