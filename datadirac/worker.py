@@ -126,9 +126,23 @@ class MPINode:
         self.world_comm = world_comm
         self.nb = np.empty((1,), dtype=int)#nullbuffer
         self.log_init()
+        self._restart = False
 
     def log_init(self):
         self.logger.info( "world comm rank:\t %i" % self.world_comm.rank )
+
+    @property
+    def restart(self):
+        """
+        Called after a run to check if a restart is needed
+        """
+        return self._restart
+
+    def check_restart():
+        """
+        If master says restart, we restart
+        """
+        self.restart = self.world_comm.bcast(self._restart)
 
     def make_dirs(self, dirs, force=False):
         e_ctr = 0
@@ -582,6 +596,7 @@ class MasterDataNode(DataNode):
         self.data_log_dir = data_log_dir
         self.working_dir = working_dir
         self.init_q_name = init_q
+        self._restart = False
 
     def get_cluster_name( self ):
         return '-'.join(socket.gethostname().split('-')[:-1])
@@ -748,6 +763,10 @@ class MasterDataNode(DataNode):
             self.world_comm.recv(source=worker_ready_id, tag=WORKER_EXIT)
             exit_count += 1
         self.logger.info( "Exiting run" )
+        if self.restart:
+            self._send_restarting()
+        else:
+            self._send_terminated()
 
     def _handle_command( self, command ):
         self.logger.debug("Recvd command: %s " %\
@@ -762,6 +781,12 @@ class MasterDataNode(DataNode):
         if command['message-type'] == 'termination-notice':
             self.logger.warning("Recvd Terminate")
             return True
+        if command['message-type'] == 'restart-notice':
+            #going to stop all nodes and restart with new init
+            self._restart = True
+            self.logger.warning("Recvd Restart")
+            return True
+
 
     def _run(self,run_id, strain, total_runs, shuffle, k):     
         self.total_runs = total_runs
@@ -802,6 +827,23 @@ class MasterDataNode(DataNode):
         self.logger.debug( "Sending %s:" % js_mess)
         rq.write( Message( body=js_mess ) )
 
+    def _send_terminated(self ):
+        message = {'message-type': 'terminated'}
+        js_mess = json.dumps( message )
+        self.logger.debug("Sending terminated message")
+        conn = boto.sqs.connect_to_region( 'us-east-1' )
+        rq = conn.get_queue( self.response_q_name )
+        self.logger.debug( "Sending %s:" % js_mess)
+        rq.write( Message( body=js_mess ) )
+
+    def _send_restarting(self ):
+        message = {'message-type': 'restarting'}
+        js_mess = json.dumps( message )
+        self.logger.debug("Sending restarting message")
+        conn = boto.sqs.connect_to_region( 'us-east-1' )
+        rq = conn.get_queue( self.response_q_name )
+        self.logger.debug( "Sending %s:" % js_mess)
+
     @property
     def partial_run_size(self):
         return (self.total_runs/(3*(self.world_comm.size -1))) + 1
@@ -827,10 +869,14 @@ if __name__ == "__main__":
 
     bl = logging.getLogger('boto')
     bl.setLevel(logging.ERROR)
+    restart = true
+    while restart:
+        restart = False
+        nf = NodeFactory( world_comm )
+        thisNode = nf.getNode()
+        thisNode.get_data()
+        while thisNode.run():
+            thisNode.logger.info("Completed one run")
+        world_comm.Barrier()
 
-    nf = NodeFactory( world_comm )
-    thisNode = nf.getNode()
-    thisNode.get_data()
-    while thisNode.run():
-        thisNode.logger.info("Completed one run")
-    world_comm.Barrier()
+    

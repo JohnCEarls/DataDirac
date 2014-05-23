@@ -47,6 +47,8 @@ def run(data_log_dir, working_dir,  init_q ):
         thisNode.logger.info("Completed one run")
     MPI.COMM_WORLD.Barrier()
     thisNode.logger.info("Exiting run")
+    thisNode.check_restart()
+    return thisNode.restart
 
 LEVELS = {'DEBUG': logging.DEBUG,
           'INFO': logging.INFO,
@@ -93,7 +95,6 @@ def main():
     init_logging( logging_file, level, boto_level, std_out_level )
     logger = logging.getLogger(name)
     logger.info( "Logging initialized" )
-
     if comm.rank == 0:
         ci_cfg = sys_def.get_system_defaults( 'cluster_init' , 'Data Cluster')
         data_log_dir = ci_cfg[ 'data_log_dir' ]
@@ -101,7 +102,6 @@ def main():
         init_q = ci_cfg[ 'init-queue' ]
     else:
         data_log_dir, working_dir,  init_q = (None, None, None)
-    run( data_log_dir, working_dir, init_q )
+    while run( data_log_dir, working_dir, init_q ):
+        logger.info("Restarting data run")
     logger.info("Exitting...")
-
-
