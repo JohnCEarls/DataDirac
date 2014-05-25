@@ -585,33 +585,39 @@ def join_run( run_id, csv_bucket, mask_id, strains, alleles, description,
 
 if __name__ == "__main__":
     run_id = 'b6-canonical-1'
-    sqs_data_to_agg = 'from-data-to-agg-b6-canonical-1' 
-    sqs_truth_to_agg = 'from-data-to-agg-b6-canonical-1-truth'
-    sqs_recycling_to_agg = 'from-data-to-agg-b6-canonical-1-bak'
-    s3_from_gpu = 'an-from-gpu-to-agg-b6-canonical-1'
+    #these should be moved to the run_model
     s3_results = 'an-jocelynn-results'
-    run_truth_table = 'truth_gpudirac_hd'
+    s3_csvs = 'an-%s-csvs' % run_id
+    #should be in the config model
+    #Not sure how to set these
+    #could get from data
+    #or be set when configuring run
+    strains=['B6']
+    alleles=['WT','Q111']
 
-    s3_csvs = 'an-hdproject-b6-canonical-csvs'
+    import masterdirac.models.run as run_mdl
+    run_model = run_mdl.get_ANRun(run_id)
+    ic = run_model['intercomm_settings']
+    sqs_data_to_agg = ic['sqs_from_data_to_agg']
+    sqs_truth_to_agg = ic['sqs_from_data_to_agg_truth']
+    sqs_recycling_to_agg = '%s-bak' % ic['sqs_from_data_to_agg']
+    s3_from_gpu = ic['s3_from_gpu_to_agg']
+    run_truth_table = run_model['run_settings']['run_truth_table']
+
+    description = run_model['description']
+    network_desc = run_model['network_config']['network_source']
+    column_label='time range'
+    row_label='pathways'
 
     mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
     mask_id += ["[4,20)", "[4,12)", "[12,20)"]
-    strains=['B6']
-    alleles=['WT','Q111']
-    column_label='time range'
-    row_label='canonical'
-    network_desc='canonical pathways'
-    description = (
-            "Pvalues testing null between %s and %s "
-            "in %s over time ranges [ %s ] "
-            " for %s.(periods of 5 weeks)"
-            ) % (alleles[0], alleles[1], strains[0], 
-                    ', '.join(mask_id), network_desc)
     from  mpi4py import MPI
     comm = MPI.COMM_WORLD
     for mask in mask_id[:]:
         print "Mask: ", mask
-        run_once(comm, mask,  sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs )
+        run_once(comm, mask,  sqs_data_to_agg,  sqs_truth_to_agg, 
+                sqs_recycling_to_agg, s3_from_gpu, s3_results, 
+                run_truth_table, s3_csvs )
 
     comm.Barrier()
     if comm.rank == 0:
