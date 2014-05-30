@@ -34,6 +34,11 @@ class DirtyRunException(Exception):
 class InvalidMask(Exception):
     #the given mask doesnt parse
     pass
+
+MASK_PATTERN_MATCH = r'([\[\(]\d+,\d+[\)\]])'
+MASK_PATTERN_PARSE = r'[\[\(](\d+),(\d+)[\)\]])'
+
+
 class ResultSet(object):
     """
     Abstract BaseClass
@@ -178,7 +183,7 @@ class Masked(object):
         return self._mask_id
 
     def get_mask(self, mask_id):
-        m = re.match(r'\[(\d+),(\d+)\)', mask_id)
+        m = re.match(MASK_PATTERN_PARSE, mask_id)
         if m:
             lower = float(m.group(1)) - .0001
             upper = float(m.group(2)) + .0001
