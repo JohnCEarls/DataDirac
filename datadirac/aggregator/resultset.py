@@ -155,7 +155,8 @@ class S3ResultSet(ResultSet):
                  #print "error on get[%r], trying again" % self.result_files[allele] 
                  count += 1
                  if count > 1:
-                     raise FileCorruption('Error on File')
+                     raise FileCorruption('Error on File [%s] [%r]' % (allele, 
+                         self.result_files[allele] ) )
                  pass
         return buffered_matrix[:self.nnets, :self.nsamp]
 

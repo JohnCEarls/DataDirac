@@ -104,26 +104,22 @@ class Accumulator:
                     raise
         return self._data_queue
 
-    def get_result_set(self):
+    def get_result_set(self, delete=True):
         while self.data_queue.count() > 0:
             m = self.data_queue.read(30)
             if m:
                 #put message away for future consumption
                 inst = json.loads( m.get_body() )
-                self.data_queue.delete_message(m)
-                return S3ResultSet( instructions=inst, self.s3_from_gpu )
+                if delete:
+                    self.data_queue.delete_message(m)
+                return S3ResultSet( instructions=inst, 
+                                    s3_from_gpu = self.s3_from_gpu )
             else:
                 self._data_queue = None
         return None
 
     def handle_result_set(self, rs):
-        try:
-            self._handle_permutation( rs )
-        except TruthException as te:
-            self.logger.error("No truth for %s %s" % (rs.run_id, rs.strain))
-        except FileCorruption as fc:
-            pass
-            #print "Corrupt file"
+        self._handle_permutation( rs )
 
     def _get_truth( self):
         truth = {}
@@ -222,9 +218,9 @@ class Accumulator:
         print "%s written to s3://%s/%s" % (file_path, csv_bucket, fname)
 
 class Truthiness(Accumulator):
-    def __init__(self, run_mdl, masks):
-        super(Truthiness, self).__init__(run_mdl, masks)
-        self.sqs_data_to_agg = run_mdl['intercomm_settings']['sqs_from_data_to_agg_truth']
+    def __init__(self, run_mdl):
+        super(Truthiness, self).__init__(run_mdl)
+        self._sqs_data_to_agg = run_mdl['intercomm_settings']['sqs_from_data_to_agg_truth']
 
     def handle_result_set(self, rs):
         if not rs.shuffle:
