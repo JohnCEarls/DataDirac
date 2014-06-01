@@ -17,35 +17,21 @@ import resultset
 from boto.dynamodb2.exceptions import ConditionalCheckFailedException
 import os.path
 from datadirac.data import NetworkInfo
-from masterdirac.models.aggregator import (  TruthGPUDiracModel, 
+from masterdirac.models.aggregator import (  TruthGPUDiracModel,
         RunGPUDiracModel, DataForDisplay  )
 import logging
 
 import pandas
 import re
 
-class TruthException(Exception):
-    pass
+from datadirac.aggregator.resultset import (  TruthException, FileCorruption, DirtyRunException)
 
-class FileCorruption(Exception):
-    pass
-
-class DirtyRunException(Exception):
-    pass
-
-class Accumulator:
+class Accumulator(object):
     def __init__(self, run_model):
         #TODO: send network info with data
         self.logger = logging.getLogger(__name__)
-        self.logger.info("Aggregating on %s" % run_id)
         self._run_config = run_model
         self._run_id = run_model['run_id']
-        self.acc_acc = {}
-        for mask_id in self.masks:
-            self.acc_acc[mask_id] = None 
-        self.acc_count = {}
-        for mask_id in masks:
-            self.acc_count[mask_id] = defaultdict(int)
         self._sqs_data_to_agg = None
         self._s3_from_gpu = None
         self._data_queue = None
@@ -55,10 +41,24 @@ class Accumulator:
         self._net_info = None
         self._pathways = None
         self._net_info = None
+        self._redrive_queue = None
+        self._prev_mess = None
+        self._masks = None
+        self.acc_acc = {}
+        self.acc_count = {}
+        self.logger.info("Aggregating on %s" % self.run_id)
+        for mask_id in self.masks:
+            self.acc_acc[mask_id] = None
+        for mask_id in self.masks:
+            self.acc_count[mask_id] = defaultdict(int)
 
     def s3_from_gpu(self):
+        """
+        Name of the s3 bucket to pull data from
+        """
         if self._s3_from_gpu is None:
-            self._s3_from_gpu = self.run_config['intercomm_settings']['s3_from_gpu_to_agg']
+            sfg = self.run_config['intercomm_settings']['s3_from_gpu_to_agg']
+            self._s3_from_gpu = sfg
         return self._s3_from_gpu
 
     @property
@@ -70,7 +70,8 @@ class Accumulator:
     @property
     def masks(self):
         if self._masks is None:
-            self._masks = self._parse_masks( self.run_config['aggregator_settings']['masks'] )
+            masks = self.run_config['aggregator_settings']['masks']
+            self._masks = self._parse_masks( masks )
         return self._masks
 
     def _parse_masks(self, masks):
@@ -79,44 +80,95 @@ class Accumulator:
 
     @property
     def sqs_data_to_agg(self):
+        """
+        Name of the sqs queue containing run informations
+        """
         if self._sqs_data_to_agg is None:
             self._sqs_data_to_agg = self.run_config['intercomm_settings']['sqs_from_data_to_agg']
         return self._sqs_data_to_agg
 
     @property
     def results_bucket(self):
+        """
+        Name of the bucket that will contatin the result files
+        """
         if self._s3_results_bucket is None:
-            self._s3_results_bucket = self.run_config['aggregator_settings']['results_bucket']
+            rb =  self.run_config['aggregator_settings']['results_bucket']
+            self._s3_results_bucket = rb
         return self._s3_results_bucket
+
+    def _set_redrive_policy(self):
+        """
+        Set the redrive policy on the data queue to 3
+        """
+        dq = self.data_queue
+        rq = self.redrive_queue
+        if not dq.get_attributes('RedrivePolicy'):
+            policy = {  "maxReceiveCount" : 3,
+                    "deadLetterTargetArn" : rq.arn }
+            policy = json.dumps( policy )
+            dq.set_attribute('RedrivePolicy', policy)
 
     @property
     def data_queue(self):
-        ctr = 0 
+        """
+        SQS queue object that contains the data specifications
+        """
+        ctr = 0
         while not self._data_queue:
             try:
                 conn = boto.sqs.connect_to_region('us-east-1')
                 self._data_queue = conn.get_queue(self.sqs_data_to_agg)
             except:
-                print "authhandler exception"
+                self.logger.exception("Attempt to get data queue failed")
                 time.sleep(2)
                 ctr += 1
                 if ctr > 10:
                     raise
+                else:
+                    self.logger.warning("retrying")
         return self._data_queue
 
-    def get_result_set(self, delete=True):
+    @property
+    def redrive_queue(self):
+        ctr = 0
+        while not self._redrive_queue:
+            try:
+                conn = boto.sqs.connect_to_region('us-east-1')
+                rqn = '%s-rdq' % self.sqs_data_to_agg
+                self._redrive_queue = conn.create_queue( rqn )
+            except:
+                self.logger.exception("Attempt to get redrive queue failed")
+                time.sleep(2)
+                ctr += 1
+                if ctr > 10:
+                    raise
+                else:
+                    self.logger.warning("retrying")
+        return self._redrive_queue
+     
+    def get_result_set(self):
         while self.data_queue.count() > 0:
             m = self.data_queue.read(30)
             if m:
                 #put message away for future consumption
                 inst = json.loads( m.get_body() )
-                if delete:
-                    self.data_queue.delete_message(m)
-                return S3ResultSet( instructions=inst, 
+                s3r = resultset.S3ResultSet( instructions=inst,
                                     s3_from_gpu = self.s3_from_gpu )
+                self._prev_mess = m
+                return s3r
             else:
                 self._data_queue = None
         return None
+
+    def success(self):
+        if self._prev_mess:
+            try:
+                self.data_queue.delete_message( self._prev_mess )
+                self._prev_mess = None
+            except:
+                message = "Error attempting to delete message"
+                self.logger.exception(message)
 
     def handle_result_set(self, rs):
         self._handle_permutation( rs )
@@ -140,7 +192,7 @@ class Accumulator:
 
     def _handle_permutation(self, rs):
         for mask_id in self._masks:
-            masked_rs = Masked( rs, mask_id )
+            masked_rs = resultset.Masked( rs, mask_id )
             accuracy = masked_rs.accuracy()
             if self.acc_acc[mask_id] is None:
                 self.acc_acc[mask_id] =  np.zeros_like(accuracy, dtype=int)
@@ -149,9 +201,9 @@ class Accumulator:
 
     def _handle_truth( self, rs ):
         with TruthGPUDiracModel.batch_write() as tgdModel:
-            base_key = 'truth-accuracy/%s/%s' 
+            base_key = 'truth-accuracy/%s/%s'
             for mask_id in self._masks:
-                masked_rs = Masked( rs, mask_id )
+                masked_rs = resultset.Masked( rs, mask_id )
                 accuracy = masked_rs.accuracy()
                 self.truth[mask_id] = accuracy
                 with tempfile.SpooledTemporaryFile() as temp:
@@ -186,12 +238,12 @@ class Accumulator:
             self._pathways = ni.get_pathways()
         return self._pathways
 
-
     @property
     def net_info(self):
-        if self._net_info is None: 
-            self._net_info = ( self.run_config['network_config']['network_table'], 
-                self.run_config['network_config']['network_source'])
+        if self._net_info is None:
+            nt = self.run_config['network_config']['network_table']
+            ns = self.run_config['network_config']['network_source']
+            self._net_info = (nt, ns)
         return self._net_info
 
     @property
@@ -215,17 +267,18 @@ class Accumulator:
         k = Key(csv_bucket)
         k.key = fname
         k.set_contents_from_filename( file_path )
-        print "%s written to s3://%s/%s" % (file_path, csv_bucket, fname)
+        msg = "%s written to s3://%s/%s" % (file_path, csv_bucket, fname)
+        self.logger.info( msg )
 
 class Truthiness(Accumulator):
     def __init__(self, run_mdl):
         super(Truthiness, self).__init__(run_mdl)
-        self._sqs_data_to_agg = run_mdl['intercomm_settings']['sqs_from_data_to_agg_truth']
+        d2a =  run_mdl['intercomm_settings']['sqs_from_data_to_agg_truth']
+        self._sqs_data_to_agg = d2a
 
     def handle_result_set(self, rs):
         if not rs.shuffle:
             self._handle_truth( rs )
-            self.data_queue.delete_message(self.prev_msg)
             return True
         else:
             return False

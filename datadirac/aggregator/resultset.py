@@ -1,11 +1,10 @@
 import boto.sqs
+import logging
 import time
 import boto
 import json
 import numpy as np
 import tempfile
-from boto.dynamodb2.items import Item
-from boto.dynamodb2.table import Table
 import hashlib
 from collections import defaultdict
 from boto.sqs.message import Message
@@ -15,7 +14,7 @@ import datetime
 from boto.dynamodb2.exceptions import ConditionalCheckFailedException
 import os.path
 from datadirac.data import NetworkInfo
-from masterdirac.models.aggregator import (  TruthGPUDiracModel, 
+from masterdirac.models.aggregator import (  TruthGPUDiracModel,
         RunGPUDiracModel, DataForDisplay  )
 import masterdirac.models.run as run_mdl
 
@@ -36,7 +35,7 @@ class InvalidMask(Exception):
     pass
 
 MASK_PATTERN_MATCH = r'([\[\(]\d+,\d+[\)\]])'
-MASK_PATTERN_PARSE = r'[\[\(](\d+),(\d+)[\)\]])'
+MASK_PATTERN_PARSE = r'[\[\(](\d+),(\d+)[\)\]]'
 
 
 class ResultSet(object):
@@ -45,6 +44,7 @@ class ResultSet(object):
     For representing and manipulating a result
     """
     def __init__(self, instructions ):
+        self.logger = logging.getLogger(__name__)
         self._result_bucket = None
         self._alleles = None
         #print instructions
@@ -60,6 +60,7 @@ class ResultSet(object):
         self._data = None
         self._classified = None
         self._truth = None
+        self._compare_mat = None
 
     @property
     def nsamp(self):
@@ -105,8 +106,8 @@ class ResultSet(object):
                 for i,_set in enumerate(classes):
                     if s in _set:
                         return i
-            self._truth = np.array( [clsfy(classes, sname) 
-                                        for sname in self.sample_names] )
+            t_list =  [clsfy(classes, sname) for sname in self.sample_names]
+            self._truth = np.array(t_list)
         return self._truth
 
     def get_run_id(self):
@@ -120,6 +121,14 @@ class ResultSet(object):
 
     def archive_package(self):
         return (self.file_id, self._instructions, self.data)
+    
+    @property
+    def compare_mat(self):
+        if self._compare_mat is None:
+            truth_mat = np.tile(self.truth, (self.nnets, 1))
+            #T.D. could slice here or compute once and check with map
+            self._compare_mat = (truth_mat == self.classified)
+        return self._compare_mat
 
 class S3ResultSet(ResultSet):
     def __init__(self, instructions, s3_from_gpu ):
@@ -138,7 +147,6 @@ class S3ResultSet(ResultSet):
                 time.sleep(5)
         return self._result_bucket
 
-
     def _get_data(self, allele ):
         complete = False
         count = 0
@@ -152,10 +160,10 @@ class S3ResultSet(ResultSet):
                 complete = True
             except Exception as e:
                  print e
-                 #print "error on get[%r], trying again" % self.result_files[allele] 
+                 #print "error on get[%r], trying again" % self.result_files[allele]
                  count += 1
                  if count > 1:
-                     raise FileCorruption('Error on File [%s] [%r]' % (allele, 
+                     raise FileCorruption('Error on File [%s] [%r]' % (allele,
                          self.result_files[allele] ) )
                  pass
         return buffered_matrix[:self.nnets, :self.nsamp]
@@ -168,49 +176,42 @@ class LocalResultSet(ResultSet):
         self.local_path = local_path
 
 class Masked(object):
-    def __init__(self, result_set, mask_id):
-        self._mask_id = mask_id
+    def __init__(self, result_set, mask):
         self._result_set = result_set
-        self._mask = None
+        self._mask = mask 
 
     @property
     def mask(self):
-        if self._mask is None:
-            self._mask = self.get_mask( self.mask_id )
         return self._mask
 
-    @property
-    def mask_id(self):
-        return self._mask_id
+    def _select_range(self):
+        """
+        Returns the set of samples within the afformentioned age range.
+        (numpy vector containing their indices)
 
-    def get_mask(self, mask_id):
-        m = re.match(MASK_PATTERN_PARSE, mask_id)
-        if m:
-            lower = float(m.group(1)) - .0001
-            upper = float(m.group(2)) + .0001
-            assert lower < upper, "Bad mask [%s]" % mask_id
-            return self._select_range( lower, upper)
-        else:    
-            raise InvalidMask("%s does not parse correctly" % mask_id)
-       
-
-    def _select_range(self, start, end):
+        T.D. could only compute once
+        """
         rs = self._result_set
+        start = float(self.mask[0]) - .0001
+        end = float(self.mask[1]) + .0001
         samp = set([])
         for _, sl in rs.sample_allele.iteritems():
             samp |= set([ sample_name for age, sample_name in sl if start <= age < end ])
         return np.array([i for i,s in enumerate(rs.sample_names) if s in samp])
 
     def accuracy(self):
+        """
+        Returns a vector representing the accuracy of a each network
+        given this age range and ordering
+        """
         rs = self._result_set
-        mask = self.mask 
-        truth_mat = np.tile(rs.truth, (rs.nnets, 1))
-        compare_mat = (truth_mat == rs.classified)
-        accuracy = compare_mat[:,mask].sum(axis=1)/float(len(mask))
+        mask_map = self._select_range( *self.mask )
+        accuracy = self.compare_mat[:,mask_map].sum(axis=1)/float(len(mask_map))
         return accuracy
 
 class ResultSetArchive(object):
     def __init__( self,run_id, num_result_sets=100, truth=False):
+        self.logger = logging.getLogger(__name__)
         self._run_id = run_id
         self._num = num_result_sets
         self._rs_ctr = 0    # a single archive count
@@ -312,14 +313,14 @@ class S3ResultSetArchive(ResultSetArchive):
                 key.key = '%s.manifest.json' % self.archive_hash
             key.set_contents_from_file( temp )
         run_mdl.insert_ANRunArchive( self.run_id, self.archive_hash, self._arch_ctr,
-                bucket = self._bucket, 
+                bucket = self._bucket,
                 archive_manifest = '%s.manifest.json' % self.archive_hash,
                 path = self._path, truth = self._truth)
 
 if __name__ == "__main__":
         sqs = boto.connect_sqs()
         d2a = sqs.create_queue( 'from-data-to-agg-b6-canonical-q92-bak' )
-        archive = S3ResultSetArchive('this-is-a-test-run-id', 'an-scratch-bucket', 
+        archive = S3ResultSetArchive('this-is-a-test-run-id', 'an-scratch-bucket',
                 path="S3ResultSetArchiveTest3", num_result_sets=9 )
         ctr = 0
         for i in range(2):
@@ -361,6 +362,6 @@ if __name__ == "__main__":
                     print mrs.accuracy()
                 """
                 archive.add_result_set( rs )
-                print ctr 
+                print ctr
                 print archive.sent
         archive.close_archive()

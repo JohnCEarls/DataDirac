@@ -31,7 +31,7 @@ class DirtyRunException(Exception):
     pass
 
 class Aggregator:
-    def __init__(self, sqs_data_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
+    def deprecated___init__(self, sqs_data_to_agg, sqs_recycling_to_agg, s3_from_gpu, 
             s3_results, run_truth_table, by_network, mask_id):
         #TODO: send network info with data
         self.sqs_data_to_agg = sqs_data_to_agg
@@ -56,14 +56,14 @@ class Aggregator:
         self._mask = None
 
     @property
-    def recycling_queue( self ):
+    def deprecated_recycling_queue( self ):
         if not self._recycling_queue:
             conn = boto.sqs.connect_to_region('us-east-1')
             self._recycling_queue = conn.create_queue(self.sqs_recycling_to_agg)
         return self._recycling_queue
 
     @property
-    def data_queue(self):
+    def deprecated_data_queue(self):
         ctr = 0 
         while not self._data_queue:
             try:
@@ -77,7 +77,7 @@ class Aggregator:
                     raise Exception("Fuck")
         return self._data_queue
 
-    def get_result_set(self):
+    def deprecated_get_result_set(self):
         while self.data_queue.count() > 0:
             m = self.data_queue.read(30)
             if m:
@@ -90,7 +90,7 @@ class Aggregator:
                 self._data_queue = None
         return None
 
-    def handle_result_set(self, rs):
+    def deprecated_handle_result_set(self, rs):
         if self._run_id is None:
             self._run_id =  rs.get_run_id()
         if self._run_id != rs.get_run_id():
@@ -111,12 +111,12 @@ class Aggregator:
             print "Found Truth"
         self.data_queue.delete_message(self.prev_msg)
 
-    def get_truth(self, rs):
+    def deprecated_get_truth(self, rs):
         if rs.spec_string not in self.truth:
             self.truth = self._get_truth(rs)
         return self.truth[rs.spec_string]
 
-    def _get_truth( self, rs):
+    def deprecated__get_truth( self, rs):
         truth = {}
         tt = self.truth_table.query( run_id__eq=rs.get_run_id() )
         for t in tt:
@@ -128,7 +128,7 @@ class Aggregator:
             raise TruthException("Well, fuck")
         return truth
 
-    def _load_np( self, bucket,  s3_file):
+    def deprecated__load_np( self, bucket,  s3_file):
         conn = boto.connect_s3()
         b = conn.get_bucket( bucket )
 
@@ -140,7 +140,7 @@ class Aggregator:
             accuracy = np.load(temp)
         return accuracy
 
-    def _handle_permutation(self, rs):
+    def deprecated__handle_permutation(self, rs):
         if self._mask is None:
             self._mask = rs.get_mask()
         rs.set_mask(self._mask)
@@ -151,7 +151,7 @@ class Aggregator:
         self.acc_acc[rs.spec_string] += (truth <= accuracy)
         self.acc_count[rs.spec_string] += 1
 
-    def _handle_truth( self, rs ):
+    def deprecated__handle_truth( self, rs ):
         if self._mask is None:
             self._mask = rs.get_mask()
         rs.set_mask(self._mask)
@@ -185,25 +185,25 @@ class Aggregator:
                 print rs.get_result_files()
 
     @property
-    def truth_table(self):
+    def deprecated_truth_table(self):
         conn = boto.dynamodb2.connect_to_region( 'us-east-1' )
         table = Table( self.run_truth_table, connection = conn )
         return table
 
-    def save_acc(self, path, prefix='acc'):
+    def deprecated_save_acc(self, path, prefix='acc'):
         for k,mat in self.acc_acc.iteritems():
             my_path = os.path.join(path, '-'.join([prefix, k]) + '.npy')
             np.save(my_path, mat)
 
     @property
-    def networks(self):
+    def deprecated_networks(self):
         if self._pathways is None:
             print self.net_info
             ni = NetworkInfo( *self.net_info )
             self._pathways = ni.get_pathways()
         return self._pathways
 
-    def _get_config(self):
+    def deprecated__get_config(self):
         net_table = Table('run_gpudirac_hd')
         r_spec = net_table.query(run_id__eq=self._run_id)
         config = None
@@ -216,27 +216,27 @@ class Aggregator:
         return config
 
     @property
-    def net_info(self):
+    def deprecated_net_info(self):
         if self._net_info is None: 
             self._net_info = ( self.run_config['network_config']['network_table'], 
                 self.run_config['network_config']['network_source'])
         return self._net_info
 
     @property
-    def run_config(self):
+    def deprecated_run_config(self):
         if self._run_config is None:
             self._run_config = self._get_config()
         return self._run_config
 
     @property
-    def run_id(self):
+    def deprecated_run_id(self):
         return self._run_id
 
-    def generate_csv(self, result, column_names, index,  filename):
+    def deprecated_generate_csv(self, result, column_names, index,  filename):
         df = pandas.DataFrame(result, columns = column_names, index=index)
         df.to_csv( filename )
 
-    def write_csv(self, bucket, file_path):
+    def deprecated_write_csv(self, bucket, file_path):
         conn = boto.connect_s3()
         csv_bucket = conn.create_bucket(bucket)
         _, fname = os.path.split(file_path)
@@ -245,7 +245,7 @@ class Aggregator:
         k.set_contents_from_filename( file_path )
         print "%s written to s3://%s/%s" % (file_path, csv_bucket, fname)
 
-    def get_mask_labels(self):
+    def deprecated_get_mask_labels(self):
         if self.mask_id == 'all':
             return ['All times']
         elif self.mask_id == 'lt12':
@@ -256,7 +256,7 @@ class Aggregator:
             return [self.mask_id]
 
 class Truthiness(Aggregator):
-    def handle_result_set(self, rs):
+    def deprecated_handle_result_set(self, rs):
         if not rs.shuffle:
             self._handle_truth( rs )
             self.data_queue.delete_message(self.prev_msg)
@@ -264,7 +264,7 @@ class Truthiness(Aggregator):
         else:
             return False
 
-def recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
+def deprecated_recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
     print "reduce, recycle, reuse"
     conn = boto.connect_sqs()
     rec = conn.get_queue( sqs_recycling_to_agg)
@@ -283,7 +283,7 @@ def recycle( sqs_recycling_to_agg, sqs_data_to_agg ):
             print "%i messages enqueued." % rec.count()
             start=rec.count()
 
-def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs ):
+def deprecated_run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to_agg, s3_from_gpu, s3_results, run_truth_table, s3_csvs ):
     by_network = True
   
     rec = None
@@ -369,7 +369,7 @@ def run_once(comm, mask_id, sqs_data_to_agg,  sqs_truth_to_agg, sqs_recycling_to
         a.save_acc( '/scratch/sgeadmin', 'acc-k-11-combined-total' )
     comm.Barrier()
 
-def join_run( run_id, csv_bucket, mask_id, strains, alleles, description, 
+def deprecated_join_run( run_id, csv_bucket, mask_id, strains, alleles, description, 
         column_label, row_label, network_desc ):
     rs =  TruthGPUDiracModel.query( run_id )
     res_list = []

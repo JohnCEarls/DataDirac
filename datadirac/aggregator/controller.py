@@ -4,6 +4,7 @@ import masterdirac.models.run as run_mdl
 import json
 import logging
 import collections
+DEBUG = True
 
 class AggManager(object):
     def __init__( self, comm, run_id=None ):
@@ -15,34 +16,62 @@ class AggManager(object):
         self._errors = collections.defaultdict( int )
         self._archiver = None
 
-    def handle_truth( self ):
-        if self.ismaster():
+    def handle_truth( self, delete_message = True ):
+        """
+        Master generates the results for comparison to the permuted
+        dirac results
+        """
+        complete = False
+        if self.is_master():
             self.logger.info("Generating Truth")
-            t = resultset.Truthiness( self.run_model, self.masks )
-            rs = t.get_result_set()
-            t.handle_result_set( rs )
-        self.comm.barrier()
+            t = accumulator.Truthiness( self.run_model )
+            if not DEBUG:
+                t._set_redrive_policy()
+            complete = False
+            ctr = 0
+            while not complete and ctr < 3:
+                rs = t.get_result_set()
+                ctr += 1
+                if not rs:
+                    self.logger.debug("empty result set")
+                    continue
+                else:
+                    complete = t.handle_result_set( rs )
+                    if complete:
+                        self.archiver.add_result_set(rs)
+                    if delete_message:
+                        t.success()
+        complete = self.comm.bcast( complete )
+        if not complete:
+            message = "Unable to get truth resultset for %s"
+            message = message % self.run_id
+            raise resultset.TruthException( message )
 
+    @property
     def archiver(self):
         if self._archiver is None:
+            ab = self.run_model['aggregator_settings']['archive_bucket']
             self._archiver = resultset.S3ResultSetArchive( self.run_id,
-                    bucket = self.run_model['aggregator_settings']['archive_bucket'],
-                    num_result_sets = 10)
+                                        bucket = ab,
+                                        num_result_sets = 10)
         return self._archiver
 
     def run(self):
-        a = accumulator.Accumulator( self.run_model ) 
-        rs = t.get_result_set()
+        a = accumulator.Accumulator( self.run_model )
+        self._set_redrive_policy( a.data_queue, a.redrive_queue )
+        rs = a.get_result_set()
         while rs:
             try:
                 a.handle_result_set(rs)
             except accumulator.FileCorruption as fc:
                 self.logger.exception("File corruption error")
-                self._errors['filecorruption'] += 1 
+                self._errors['filecorruption'] += 1
             except:
-                self.logger.exception("Error occured while handling resultset")
-            rs = t.get_result_set()
-        self.logger.info("Completed Accumulation[%s] " % self.run_id )
+                message = "Error occured while handling resultset"
+                self.logger.exception(message)
+            rs = a.get_result_set()
+        message = "Completed Accumulation[%s] " % self.run_id
+        self.logger.info(message)
 
     @property
     def run_model(self):
@@ -56,10 +85,11 @@ class AggManager(object):
 
         Note: trying to limit conns to run db, so
         there is a little jiggery pokery with MPI
+        to minimize those communications
         """
         packed = None
         if self.is_master():
-            run_model = self.get_run_model() 
+            run_model = self.get_run_model()
             packed = self._pack_run_model(run_model)
         packed = self.comm.bcast( packed )
         return self._unpack_run_model( packed )
@@ -97,34 +127,41 @@ class AggManager(object):
     @property
     def logger(self):
         if self._logger is None:
-            self._logger = logging.getLogger("%s-%i" % (__name__, self.comm.rank))
+            ln = "%s-%i" % (__name__, self.comm.rank)
+            self._logger = logging.getLogger( ln )
         return self._logger
 
 def run_hack( run_id ):
-    aggregator_settings = {'masks':'[0,20],[10,15], [5,12]',
+    aggregator_settings = {
+            'masks':'[0,20],[10,15], [5,12]',
             'results_bucket': 'an-hdproject-csvs',
             'archive_bucket': 'an-hdproject-data-archive'
             }
     run_mdl.update_ANRun( run_id, aggregator_settings=aggregator_settings )
 
-
-
-
 if  __name__ == "__main__":
     from mpi4py import MPI
     import sys
     comm = MPI.COMM_WORLD
+    run_id = 'test-agg-009'
+    print run_id
+    if comm.rank == 0:
+        run_hack( run_id )
+    comm.barrier()
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
     b = logging.getLogger('botocore')
     b.setLevel(logging.WARNING)
+    b = logging.getLogger('boto')
+    b.setLevel(logging.WARNING)
     p = logging.getLogger('pynamodb')
     p.setLevel(logging.WARNING)
-
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     ch.setFormatter(formatter)
     root.addHandler(ch)
-    am = AggManager( comm, 's129-reactome')
+    am = AggManager( comm, run_id )
+    am.handle_truth( delete_message = False)
     print "%i, [%r]" % ( am.comm.rank, am.run_model )
+
