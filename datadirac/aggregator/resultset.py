@@ -17,6 +17,7 @@ from datadirac.data import NetworkInfo
 from masterdirac.models.aggregator import (  TruthGPUDiracModel,
         RunGPUDiracModel, DataForDisplay  )
 import masterdirac.models.run as run_mdl
+import random
 
 import pandas
 import re
@@ -121,7 +122,7 @@ class ResultSet(object):
 
     def archive_package(self):
         return (self.file_id, self._instructions, self.data)
-    
+
     @property
     def compare_mat(self):
         if self._compare_mat is None:
@@ -131,29 +132,45 @@ class ResultSet(object):
         return self._compare_mat
 
 class S3ResultSet(ResultSet):
-    def __init__(self, instructions, s3_from_gpu ):
+    def __init__(self, instructions, from_gpu_bucket_name ):
+        """
+        instructions dictified run model
+        """
         super(S3ResultSet,self).__init__(instructions)
-        self.s3_from_gpu= s3_from_gpu
+        self._s3_from_gpu=  from_gpu_bucket_name
+        self._from_gpu_bucket = None
 
     @property
-    def result_bucket(self):
-        while not self._result_bucket:
+    def from_gpu_bucket(self):
+        """
+        Returns the S3 bucket object that contains the gpu generated
+        results
+        """
+        attempts = 0
+        while not self._from_gpu_bucket:
+            attempts += 1
             try:
                 conn = boto.connect_s3()
-                self._result_bucket = conn.get_bucket(self.s3_from_gpu)
+                self._from_gpu_bucket = conn.get_bucket(self._s3_from_gpu)
             except:
-                print "could not connect to %s " % self.s3_from_gpu
-                print "Try again"
-                time.sleep(5)
-        return self._result_bucket
+                if attempts > 5:
+                    raise
+                msg = "Could not connect to %s. Trying again. "
+                msg = msg % self._s3_from_gpu
+                self.logger.exception( msg )
+                time.sleep(2 + (random.random() * attempts))
+        return self._from_gpu_bucket
 
     def _get_data(self, allele ):
+        """
+        Returns the given alleles rms matrix
+        """
         complete = False
         count = 0
         while not complete:
             try:
                 with tempfile.SpooledTemporaryFile() as temp:
-                    key = self.result_bucket.get_key( self.result_files[allele] )
+                    key = self.from_gpu_bucket.get_key( self.result_files[allele] )
                     key.get_contents_to_file( temp )
                     temp.seek(0)
                     buffered_matrix = np.load( temp )
@@ -176,13 +193,38 @@ class LocalResultSet(ResultSet):
         self.local_path = local_path
 
 class Masked(object):
+    """
+    Receives a resultset object and a mask (start, end) i.e. (5,10)
+
+    Returns the accuracy for all networks over that range as a numpy
+    array
+    """
     def __init__(self, result_set, mask):
         self._result_set = result_set
-        self._mask = mask 
+        self._mask = mask
 
     @property
     def mask(self):
         return self._mask
+
+    @property
+    def run_id(self):
+        return self._result_set.run_id
+
+    @property
+    def result_set(self):
+        return self._result_set
+
+    @property
+    def accuracy(self):
+        """
+        Returns a vector representing the accuracy of a each network
+        given this age range and ordering
+        """
+        rs = self.result_set
+        mask_map = self._select_range()
+        accuracy = rs.compare_mat[:,mask_map].sum(axis=1)/float(len(mask_map))
+        return accuracy
 
     def _select_range(self):
         """
@@ -191,7 +233,7 @@ class Masked(object):
 
         T.D. could only compute once
         """
-        rs = self._result_set
+        rs = self.result_set
         start = float(self.mask[0]) - .0001
         end = float(self.mask[1]) + .0001
         samp = set([])
@@ -199,18 +241,8 @@ class Masked(object):
             samp |= set([ sample_name for age, sample_name in sl if start <= age < end ])
         return np.array([i for i,s in enumerate(rs.sample_names) if s in samp])
 
-    def accuracy(self):
-        """
-        Returns a vector representing the accuracy of a each network
-        given this age range and ordering
-        """
-        rs = self._result_set
-        mask_map = self._select_range( *self.mask )
-        accuracy = self.compare_mat[:,mask_map].sum(axis=1)/float(len(mask_map))
-        return accuracy
-
 class ResultSetArchive(object):
-    def __init__( self,run_id, num_result_sets=100, truth=False):
+    def __init__( self,run_id, num_result_sets=100):
         self.logger = logging.getLogger(__name__)
         self._run_id = run_id
         self._num = num_result_sets
@@ -221,7 +253,7 @@ class ResultSetArchive(object):
         self._sent = {}
         self._file_name = hashlib.md5()
         self._arch_name = hashlib.md5()
-        self._truth = truth
+        self._truth = False
 
     @property
     def run_id(self):
@@ -234,6 +266,8 @@ class ResultSetArchive(object):
         self._file_name.update( file_id )
         self._rs_ctr += 1
         self._arch_ctr += 1
+        if not result_set.shuffle:
+            self._truth = True
         if self._rs_ctr >= self._num:
             self.write()
 
@@ -290,14 +324,19 @@ class S3ResultSetArchive(ResultSetArchive):
 
     @property
     def bucket(self):
+        attempts = 0
         while not self._bucket:
+            attempts += 1
             try:
                 conn = boto.connect_s3()
-                self._bucket = conn.create_bucket(self._bucket_name)
+                self._bucket = conn.get_bucket(self._bucket_name)
             except:
-                print "could not connect to %s " % self.s3_from_gpu
-                print "Try again"
-                time.sleep(5)
+                if attempts > 5:
+                    raise
+                msg = "Could not connect to %s. Trying again. "
+                msg = msg % self._bucket_name
+                self.logger.exception( msg )
+                time.sleep(2 + (random.random() * attempts))
         return self._bucket
 
     def close_archive(self):
@@ -313,9 +352,10 @@ class S3ResultSetArchive(ResultSetArchive):
                 key.key = '%s.manifest.json' % self.archive_hash
             key.set_contents_from_file( temp )
         run_mdl.insert_ANRunArchive( self.run_id, self.archive_hash, self._arch_ctr,
-                bucket = self._bucket,
+                bucket = self._bucket_name,
                 archive_manifest = '%s.manifest.json' % self.archive_hash,
                 path = self._path, truth = self._truth)
+
 
 if __name__ == "__main__":
         sqs = boto.connect_sqs()

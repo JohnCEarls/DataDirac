@@ -4,7 +4,9 @@ import masterdirac.models.run as run_mdl
 import json
 import logging
 import collections
-DEBUG = True
+import boto
+from boto.exception import  S3ResponseError
+from boto.s3.lifecycle import Lifecycle,Expiration
 
 class AggManager(object):
     def __init__( self, comm, run_id=None ):
@@ -25,8 +27,7 @@ class AggManager(object):
         if self.is_master():
             self.logger.info("Generating Truth")
             t = accumulator.Truthiness( self.run_model )
-            if not DEBUG:
-                t._set_redrive_policy()
+            t._set_redrive_policy()
             complete = False
             ctr = 0
             while not complete and ctr < 3:
@@ -38,9 +39,17 @@ class AggManager(object):
                 else:
                     complete = t.handle_result_set( rs )
                     if complete:
-                        self.archiver.add_result_set(rs)
+                        at = self.archiver.add_result_set(rs)
+                        self.close_archiver()
                     if delete_message:
                         t.success()
+            if not complete:
+                try:
+                    t._get_truth()
+                    complete = True
+                    #the truth exists in database
+                except:
+                    pass
         complete = self.comm.bcast( complete )
         if not complete:
             message = "Unable to get truth resultset for %s"
@@ -52,17 +61,27 @@ class AggManager(object):
         if self._archiver is None:
             ab = self.run_model['aggregator_settings']['archive_bucket']
             self._archiver = resultset.S3ResultSetArchive( self.run_id,
-                                        bucket = ab,
-                                        num_result_sets = 10)
+                                        bucket_name = ab, path=self.run_id,
+                                        num_result_sets = 1000)
         return self._archiver
 
-    def run(self):
+    def close_archiver(self):
+        self.archiver.close_archive()
+        self._archiver = None
+
+
+    def run(self, delete_message=True):
         a = accumulator.Accumulator( self.run_model )
-        self._set_redrive_policy( a.data_queue, a.redrive_queue )
+        if self.is_master(): 
+            a._set_redrive_policy( )
+        ctr = 0
         rs = a.get_result_set()
         while rs:
             try:
                 a.handle_result_set(rs)
+                at = self.archiver.add_result_set(rs)
+                if delete_message:
+                    a.success()
             except accumulator.FileCorruption as fc:
                 self.logger.exception("File corruption error")
                 self._errors['filecorruption'] += 1
@@ -70,7 +89,17 @@ class AggManager(object):
                 message = "Error occured while handling resultset"
                 self.logger.exception(message)
             rs = a.get_result_set()
-        message = "Completed Accumulation[%s] " % self.run_id
+            ctr += 1
+            if a.acc_count % 5000 == 0:
+                self.archiver.close_archive()
+                self._archiver = None
+        self.logger.debug("Worker returned")
+        self.comm.barrier()
+        self.logger.debug("All resultsets consumed")
+        a.join( self.comm )
+        if self.is_master():
+            a.save_results()
+        message = "Completed Aggregation[%s] " % self.run_id
         self.logger.info(message)
 
     @property
@@ -124,6 +153,51 @@ class AggManager(object):
     def is_master(self):
         return self.comm.Get_rank() == 0
 
+    def clean_up(self):
+        self.archiver.close_archive()
+        del_all_pattern = '%s-lc-delete-all'
+        if self.is_master():
+            ic = self.run_model['intercomm_settings']
+            for k,v in ic.iteritems():
+                try:
+                    if k[:3] == 'sqs':
+                        self._cleanup_sqs(v)
+                    if k[:2] == 's3':
+                        self._cleanup_s3(v)
+                except:
+                    self.logger.exception("error cleaning up %s:%s" % (k,v))
+
+    def _cleanup_sqs(self, queue):
+        conn = boto.connect_sqs()
+        success = conn.delete_queue( v )
+        if not success:
+            self.logger.warning("Could not delete %s" % v )
+
+    def _cleanup_s3(self, bucket_name):
+        conn = boto.connect_s3()
+        b = conn.get_bucket( bucket_name )
+        try:
+            config = b.get_lifecycle_config()
+            for r in config:
+                if r.id == del_all_pattern % b.name:
+                    if len(b.get_all_keys()) > 0:
+                        msg = "Want to delete %s but not empty" % b.name
+                        msg += "Try again tomorrow"
+                        self.logger.info(msg)
+                    else:
+                        b.delete()
+        except S3ResponseError as sre:
+            if sre.error_code == 'NoSuchLifecycleConfiguration':
+                msg =  "Setting deletion lifecycle rule for %s" 
+                msg = msg % bucket_name 
+                self.logger.info(msg)
+                lf = Lifecycle()
+                lf.add_rule( id=del_all_pattern % b.name,
+                        expiration=Expiration(days=1),
+                        prefix='', status='Enabled',
+                         transition=None  )
+                b.configure_lifecycle(lf)
+
     @property
     def logger(self):
         if self._logger is None:
@@ -142,26 +216,33 @@ def run_hack( run_id ):
 if  __name__ == "__main__":
     from mpi4py import MPI
     import sys
-    comm = MPI.COMM_WORLD
-    run_id = 'test-agg-009'
-    print run_id
-    if comm.rank == 0:
-        run_hack( run_id )
-    comm.barrier()
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    b = logging.getLogger('botocore')
-    b.setLevel(logging.WARNING)
-    b = logging.getLogger('boto')
-    b.setLevel(logging.WARNING)
-    p = logging.getLogger('pynamodb')
-    p.setLevel(logging.WARNING)
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    ch.setFormatter(formatter)
-    root.addHandler(ch)
-    am = AggManager( comm, run_id )
-    am.handle_truth( delete_message = False)
-    print "%i, [%r]" % ( am.comm.rank, am.run_model )
+    try:
+        comm = MPI.COMM_WORLD
+        run_id = 's129-canonical'
+        print run_id
+        if comm.rank == 0:
+            run_hack( run_id )
+        comm.barrier()
+        root = logging.getLogger()
+        root.setLevel(logging.INFO)
+        b = logging.getLogger('botocore')
+        b.setLevel(logging.WARNING)
+        b = logging.getLogger('boto')
+        b.setLevel(logging.WARNING)
+        p = logging.getLogger('pynamodb')
+        p.setLevel(logging.WARNING)
+        ch = logging.StreamHandler(sys.stdout)
+        ch.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        ch.setFormatter(formatter)
+        root.addHandler(ch)
+        am = AggManager( comm, run_id )
+        am.handle_truth()
+        am.run()
+        am.clean_up()
+    except:
+        am.archiver.close_archive()
+        raise
+
+
 
