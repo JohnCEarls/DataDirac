@@ -42,7 +42,8 @@ class AggManager(object):
                         at = self.archiver.add_result_set(rs)
                         self.close_archiver()
                     if delete_message:
-                        t.success()
+                        print "Should not get here on debug"
+                        #t.success()
             if not complete:
                 try:
                     t._get_truth()
@@ -155,13 +156,14 @@ class AggManager(object):
 
     def clean_up(self):
         self.archiver.close_archive()
-        del_all_pattern = '%s-lc-delete-all'
         if self.is_master():
             ic = self.run_model['intercomm_settings']
             for k,v in ic.iteritems():
                 try:
                     if k[:3] == 'sqs':
-                        self._cleanup_sqs(v)
+                        #DEBUG
+                        #self._cleanup_sqs(v)
+                        pass
                     if k[:2] == 's3':
                         self._cleanup_s3(v)
                 except:
@@ -169,13 +171,14 @@ class AggManager(object):
 
     def _cleanup_sqs(self, queue):
         conn = boto.connect_sqs()
-        success = conn.delete_queue( v )
+        success = conn.delete_queue( queue )
         if not success:
             self.logger.warning("Could not delete %s" % v )
 
     def _cleanup_s3(self, bucket_name):
         conn = boto.connect_s3()
         b = conn.get_bucket( bucket_name )
+        del_all_pattern = '%s-lc-delete-all'
         try:
             config = b.get_lifecycle_config()
             for r in config:
@@ -206,8 +209,11 @@ class AggManager(object):
         return self._logger
 
 def run_hack( run_id ):
+    mask_id = ["[%i,%i)" % (i, i+5) for i in range(4,16)]
+    mask_id += ["[4,20)", "[4,12)", "[12,20)"]
+    str_join = ','.join(mask_id)
     aggregator_settings = {
-            'masks':'[0,20],[10,15], [5,12]',
+            'masks': str_join,
             'results_bucket': 'an-hdproject-csvs',
             'archive_bucket': 'an-hdproject-data-archive'
             }
@@ -218,7 +224,7 @@ if  __name__ == "__main__":
     import sys
     try:
         comm = MPI.COMM_WORLD
-        run_id = 's129-canonical'
+        run_id = 's129-reactome'
         print run_id
         if comm.rank == 0:
             run_hack( run_id )
@@ -237,7 +243,7 @@ if  __name__ == "__main__":
         ch.setFormatter(formatter)
         root.addHandler(ch)
         am = AggManager( comm, run_id )
-        am.handle_truth()
+        am.handle_truth(delete_message=False)
         am.run()
         am.clean_up()
     except:

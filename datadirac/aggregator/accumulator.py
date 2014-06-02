@@ -50,6 +50,9 @@ class Accumulator(object):
         for mask_id in self.mask_ids:
             self.acc_acc[mask_id] = None
         self.acc_count = 0
+        #DEBUGGING
+        self._rec_q_name = None
+        self._rec_q = None
 
     @property
     def s3_from_gpu(self):
@@ -120,6 +123,8 @@ class Accumulator(object):
             self._sqs_data_to_agg = sd2a
             msg = "self. sqs_data_to_agg: %s" % self._sqs_data_to_agg
             self.logger.debug( msg )
+            ##DEBUG
+            self._rec_q_name = '%s-bak' % sd2a
         return self._sqs_data_to_agg
 
     @property
@@ -158,6 +163,11 @@ class Accumulator(object):
             try:
                 conn = boto.sqs.connect_to_region('us-east-1')
                 self._data_queue = conn.get_queue(self.sqs_data_to_agg)
+                try:
+                    #DEBUG
+                    self._rec_q = conn.get_queue(self._rec_q_name)
+                except:
+                    self._rec_q = conn.create_queue(self._rec_q_name)
                 self.logger.debug("Connected data_queue")
             except:
                 self.logger.exception("Attempt to get data queue failed")
@@ -205,6 +215,8 @@ class Accumulator(object):
     def success(self):
         if self._prev_mess:
             try:
+                #DEBUG
+                self._rec_q.write(Message(body=self._prev_mess.get_body()))
                 self.data_queue.delete_message( self._prev_mess )
                 self.logger.debug("Deleting message")
                 self._prev_mess = None
@@ -219,7 +231,8 @@ class Accumulator(object):
         truth = {}
         for item in TruthGPUDiracModel.query(self.run_id):
             try:
-                truth[item.strain_id] = self._load_np( item.accuracy_file )
+                if item.strain_id in self.mask_ids:
+                    truth[item.strain_id] = self._load_np( item.accuracy_file )
             except:
                 pass
         return truth
@@ -363,13 +376,14 @@ class Accumulator(object):
 
     def save_results( self ):
         results = {} 
-        pval_key = '%s/results/%s' % (self.run_id, 'joined-pvals.csv')
+        ts = datetime.datetime.utcnow().strftime('%Y.%m.%d-%H.%M.%S')
+        pval_key = '%s/results/%s/%s' % (self.run_id, ts, 'joined-pvals.csv')
         self._save_dataframe_to_s3( pval_key, self.joined_pvals.to_csv )
         results['pvalues'] = {
                                 'bucket': self.results_bucket_name,
                                 'file' : pval_key
                              }
-        acc_key = '%s/results/%s' % (self.run_id, 'joined-counts.csv')
+        acc_key = '%s/results/%s/%s' % (self.run_id,ts, 'joined-counts.csv')
         self._save_dataframe_to_s3( acc_key, self.joined_acc_acc.to_csv )
         results['counts'] = {
                                 'bucket': self.results_bucket_name,
