@@ -63,7 +63,7 @@ class AggManager(object):
             ab = self.run_model['aggregator_settings']['archive_bucket']
             self._archiver = resultset.S3ResultSetArchive( self.run_id,
                                         bucket_name = ab, path=self.run_id,
-                                        num_result_sets = 1000)
+                                        num_result_sets = 100)
         return self._archiver
 
     def close_archiver(self):
@@ -91,7 +91,7 @@ class AggManager(object):
                 self.logger.exception(message)
             rs = a.get_result_set()
             ctr += 1
-            if a.acc_count % 5000 == 0:
+            if a.acc_count % 1000 == 0:
                 self.archiver.close_archive()
                 self._archiver = None
         self.logger.debug("Worker returned")
@@ -224,7 +224,7 @@ if  __name__ == "__main__":
     import sys
     try:
         comm = MPI.COMM_WORLD
-        run_id = 'all-q111-kegg'
+        run_id = 'all-q111-reactome'
         print run_id
         if comm.rank == 0:
             run_hack( run_id )
