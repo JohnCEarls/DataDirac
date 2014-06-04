@@ -224,7 +224,7 @@ if  __name__ == "__main__":
     import sys
     try:
         comm = MPI.COMM_WORLD
-        run_id = 's129-reactome'
+        run_id = 'all-q111-kegg'
         print run_id
         if comm.rank == 0:
             run_hack( run_id )

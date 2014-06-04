@@ -163,11 +163,7 @@ class Accumulator(object):
             try:
                 conn = boto.sqs.connect_to_region('us-east-1')
                 self._data_queue = conn.get_queue(self.sqs_data_to_agg)
-                try:
-                    #DEBUG
-                    self._rec_q = conn.get_queue(self._rec_q_name)
-                except:
-                    self._rec_q = conn.create_queue(self._rec_q_name)
+                self._rec_q = conn.create_queue(self._rec_q_name)
                 self.logger.debug("Connected data_queue")
             except:
                 self.logger.exception("Attempt to get data queue failed")
