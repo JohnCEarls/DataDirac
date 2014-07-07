@@ -161,9 +161,7 @@ class AggManager(object):
             for k,v in ic.iteritems():
                 try:
                     if k[:3] == 'sqs':
-                        #DEBUG
-                        #self._cleanup_sqs(v)
-                        pass
+                        self._cleanup_sqs(v)
                     if k[:2] == 's3':
                         self._cleanup_s3(v)
                 except:
@@ -179,27 +177,15 @@ class AggManager(object):
         conn = boto.connect_s3()
         b = conn.get_bucket( bucket_name )
         del_all_pattern = '%s-lc-delete-all'
-        try:
-            config = b.get_lifecycle_config()
-            for r in config:
-                if r.id == del_all_pattern % b.name:
-                    if len(b.get_all_keys()) > 0:
-                        msg = "Want to delete %s but not empty" % b.name
-                        msg += "Try again tomorrow"
-                        self.logger.info(msg)
-                    else:
-                        b.delete()
-        except S3ResponseError as sre:
-            if sre.error_code == 'NoSuchLifecycleConfiguration':
-                msg =  "Setting deletion lifecycle rule for %s" 
-                msg = msg % bucket_name 
-                self.logger.info(msg)
-                lf = Lifecycle()
-                lf.add_rule( id=del_all_pattern % b.name,
-                        expiration=Expiration(days=1),
-                        prefix='', status='Enabled',
-                         transition=None  )
-                b.configure_lifecycle(lf)
+        msg =  "Setting deletion lifecycle rule for %s" 
+        msg = msg % bucket_name 
+        self.logger.info(msg)
+        lf = Lifecycle()
+        lf.add_rule( id=del_all_pattern % b.name,
+                expiration=Expiration(days=1),
+                prefix='', status='Enabled',
+                transition=None  )
+        b.configure_lifecycle(lf)
 
     @property
     def logger(self):
