@@ -8,6 +8,11 @@ import boto
 from boto.exception import  S3ResponseError
 from boto.s3.lifecycle import Lifecycle,Expiration
 
+DEL_LIFECYCLE_PATTERN = '%s-lc-delete-all'
+#the pattern for marking a bucket as deletable
+#a lifecycle rule deleting all objects is created under this
+#name % bucket, and if the bucket is empty, it can be safely deleted
+
 class AggManager(object):
     def __init__( self, comm, run_id=None ):
         self._logger = None
@@ -168,15 +173,23 @@ class AggManager(object):
                     self.logger.exception("error cleaning up %s:%s" % (k,v))
 
     def _cleanup_sqs(self, queue):
+        """
+        Deletes queue
+        """
         conn = boto.connect_sqs()
         success = conn.delete_queue( queue )
         if not success:
             self.logger.warning("Could not delete %s" % v )
 
     def _cleanup_s3(self, bucket_name):
+        """
+        Adds lifecycle rule (DEL_LIFECYCLE_PATTERN % bucket_name)
+        to bucket_name that marks all objects in this
+        bucket as expiring(delete) in 1 day
+        """
         conn = boto.connect_s3()
         b = conn.get_bucket( bucket_name )
-        del_all_pattern = '%s-lc-delete-all'
+        del_all_pattern = DEL_LIFECYCLE_PATTERN 
         msg =  "Setting deletion lifecycle rule for %s" 
         msg = msg % bucket_name 
         self.logger.info(msg)
