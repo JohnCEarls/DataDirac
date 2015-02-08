@@ -199,9 +199,11 @@ class Masked(object):
     Returns the accuracy for all networks over that range as a numpy
     array
     """
-    def __init__(self, result_set, mask):
+    def __init__(self, result_set, mask, holdout_file):
         self._result_set = result_set
         self._mask = mask
+        self._holdout_file = holdout_file
+        self._holdout = None
 
     @property
     def mask(self):
@@ -226,6 +228,17 @@ class Masked(object):
         accuracy = rs.compare_mat[:,mask_map].sum(axis=1)/float(len(mask_map))
         return accuracy
 
+    @property
+    def holdout( self ):
+        if self._holdout is None:
+            holdout_set = []
+            with open( self._holdout_file, 'r') as holdout:
+                for line in holdout:
+                    holdout_set.append(line.strip())
+            self._holdout = set( holdout_set )
+        return self._holdout
+
+
     def _select_range(self):
         """
         Returns the set of samples within the afformentioned age range.
@@ -239,7 +252,15 @@ class Masked(object):
         samp = set([])
         for _, sl in rs.sample_allele.iteritems():
             samp |= set([ sample_name for age, sample_name in sl if start <= age < end ])
+        samp = self._holdout_mask(samp)
         return np.array([i for i,s in enumerate(rs.sample_names) if s in samp])
+
+    def _holdout_mask( self, samp ):
+        """
+        Given a set of samples, returns the subset of that list that are in
+        the holdout list.
+        """
+        return samp & self.holdout
 
 class ResultSetArchive(object):
     def __init__( self,run_id, num_result_sets=100):

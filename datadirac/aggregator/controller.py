@@ -14,7 +14,7 @@ DEL_LIFECYCLE_PATTERN = '%s-lc-delete-all'
 #name % bucket, and if the bucket is empty, it can be safely deleted
 
 class AggManager(object):
-    def __init__( self, comm, run_id=None ):
+    def __init__( self, comm, run_id=None, holdout_file=None ):
         self._logger = None
         self.comm = comm
         self.logger.debug("__init__")
@@ -22,6 +22,8 @@ class AggManager(object):
         self._run_model = self._get_run_model()
         self._errors = collections.defaultdict( int )
         self._archiver = None
+        self._holdout_file = holdout_file
+
 
     def handle_truth( self, delete_message = True ):
         """
@@ -31,7 +33,7 @@ class AggManager(object):
         complete = False
         if self.is_master():
             self.logger.info("Generating Truth")
-            t = accumulator.Truthiness( self.run_model )
+            t = accumulator.Truthiness( self.run_model, self._holdout_file)
             t._set_redrive_policy()
             complete = False
             ctr = 0
@@ -77,7 +79,7 @@ class AggManager(object):
 
 
     def run(self, delete_message=True):
-        a = accumulator.Accumulator( self.run_model )
+        a = accumulator.Accumulator( self.run_model, self._holdout_file )
         if self.is_master(): 
             a._set_redrive_policy( )
         ctr = 0
@@ -224,6 +226,8 @@ if  __name__ == "__main__":
     try:
         comm = MPI.COMM_WORLD
         run_id = 'all-q111-reactome'
+        holdout_file = '/home/sgeadmin/holdout.txt'
+        print "Running as holdout"
         print run_id
         if comm.rank == 0:
             run_hack( run_id )
@@ -241,7 +245,7 @@ if  __name__ == "__main__":
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         ch.setFormatter(formatter)
         root.addHandler(ch)
-        am = AggManager( comm, run_id )
+        am = AggManager( comm, run_id, holdout_file )
         am.handle_truth(delete_message=False)
         am.run()
         am.clean_up()

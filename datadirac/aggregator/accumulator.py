@@ -26,7 +26,7 @@ import re
 from datadirac.aggregator.resultset import (  TruthException, FileCorruption, DirtyRunException)
 
 class Accumulator(object):
-    def __init__(self, run_model):
+    def __init__(self, run_model, holdout_file=None):
         #TODO: send network info with data
         self.logger = logging.getLogger(__name__)
         self._run_config = run_model
@@ -53,6 +53,7 @@ class Accumulator(object):
         #DEBUGGING
         self._rec_q_name = None
         self._rec_q = None
+        self._holdout_file = holdout_file
 
     @property
     def s3_from_gpu(self):
@@ -246,7 +247,7 @@ class Accumulator(object):
     def _handle_permutation(self, rs):
         for mid, m in zip(self.mask_ids, self.masks):
             self.logger.debug("Handling perm for %s" % mid)
-            masked_rs = resultset.Masked( rs, m )
+            masked_rs = resultset.Masked( rs, m, self._holdout_file )
             accuracy = masked_rs.accuracy
             if self.acc_acc[mid] is None:
                 self.acc_acc[mid] =  np.zeros_like(accuracy, dtype=int)
@@ -259,7 +260,7 @@ class Accumulator(object):
             if self._truth is None:
                 self._truth = {}#hacky, make setter
             for mid, m in zip(self.mask_ids, self.masks):
-                masked_rs = resultset.Masked( rs, m )
+                masked_rs = resultset.Masked( rs, m, self._holdout_file )
                 acc = self._truth[mid] = masked_rs.accuracy
                 r_key = self._save_result_to_s3( base_key, acc )
                 rf =  base64.b64encode( json.dumps( rs.get_result_files() ) )
@@ -409,8 +410,8 @@ class Accumulator(object):
         return key_name
 
 class Truthiness(Accumulator):
-    def __init__(self, run_mdl):
-        super(Truthiness, self).__init__(run_mdl)
+    def __init__(self, run_mdl, holdout_file):
+        super(Truthiness, self).__init__(run_mdl, holdout_file)
         d2a =  run_mdl['intercomm_settings']['sqs_from_data_to_agg_truth']
         self._sqs_data_to_agg = d2a
 
